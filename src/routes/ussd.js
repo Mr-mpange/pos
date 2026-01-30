@@ -28,7 +28,8 @@ function getSession(sessionId, phoneNumber) {
   if (!ussdSessions.has(sessionKey)) {
     ussdSessions.set(sessionKey, {
       phoneNumber,
-      menu: MENUS.MAIN,
+      menu: 'language_selection', // Start with language selection
+      language: null, // Will be set after language selection
       data: {},
       step: 0,
       lastActivity: Date.now()
@@ -49,71 +50,145 @@ function clearSession(sessionId, phoneNumber) {
   ussdSessions.delete(phoneNumber);
 }
 
-function buildMainMenu() {
-  return `CON Welcome to POS Store
+function buildMainMenu(lang = 'en') {
+  const menus = {
+    en: `CON Welcome to POS Store
 1. Shop Products
 2. View Cart
 3. Wallet
 4. Order History
-0. Exit`;
+5. Call to Shop
+0. Exit`,
+    sw: `CON Karibu POS Store
+1. Ununua Bidhaa
+2. Angalia Kikapu
+3. Pochi
+4. Historia ya Maagizo
+5. Piga Simu Kununua
+0. Toka`
+  };
+  return menus[lang] || menus.en;
 }
 
-function buildShopMenu() {
-  return `CON Shop Menu
+function buildLanguageMenu() {
+  return `CON Choose Language / Chagua Lugha
+1. English
+2. Kiswahili`;
+}
+
+function buildShopMenu(lang = 'en') {
+  const menus = {
+    en: `CON Shop Menu
 1. Browse All Products
 2. Search Products
 3. View Categories
-4. Back to Main Menu`;
+4. Back to Main Menu`,
+    sw: `CON Menyu ya Ununuzi
+1. Angalia Bidhaa Zote
+2. Tafuta Bidhaa
+3. Angalia Makundi
+4. Rudi Menyu Kuu`
+  };
+  return menus[lang] || menus.en;
 }
 
-function buildWalletMenu() {
-  return `CON Wallet Menu
+function buildWalletMenu(lang = 'en') {
+  const menus = {
+    en: `CON Wallet Menu
 1. Check Balance
 2. Send Money
 3. Transaction History
 4. Add Money (Demo)
-0. Back to Main Menu`;
+0. Back to Main Menu`,
+    sw: `CON Menyu ya Pochi
+1. Angalia Salio
+2. Tuma Pesa
+3. Historia ya Miamala
+4. Ongeza Pesa (Jaribio)
+0. Rudi Menyu Kuu`
+  };
+  return menus[lang] || menus.en;
 }
 
-function buildProductList(products, page = 1, itemsPerPage = 5) {
+function buildProductList(products, page = 1, itemsPerPage = 5, lang = 'en') {
   const startIndex = (page - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   const pageProducts = products.slice(startIndex, endIndex);
   
-  let menu = `CON Products (Page ${page}):\n`;
+  const labels = {
+    en: { 
+      title: 'Products',
+      nextPage: 'Next Page',
+      prevPage: 'Previous Page',
+      back: 'Back to Shop Menu'
+    },
+    sw: {
+      title: 'Bidhaa',
+      nextPage: 'Ukurasa Unaofuata',
+      prevPage: 'Ukurasa Uliopita',
+      back: 'Rudi Menyu ya Ununuzi'
+    }
+  };
+  
+  const label = labels[lang] || labels.en;
+  
+  let menu = `CON ${label.title} (${lang === 'sw' ? 'Ukurasa' : 'Page'} ${page}):\n`;
   pageProducts.forEach((product, index) => {
     const menuIndex = startIndex + index + 1;
     menu += `${menuIndex}. ${product.name} - ${product.price} TZS\n`;
   });
   
   if (endIndex < products.length) {
-    menu += `${itemsPerPage + 1}. Next Page\n`;
+    menu += `${itemsPerPage + 1}. ${label.nextPage}\n`;
   }
   if (page > 1) {
-    menu += `${itemsPerPage + 2}. Previous Page\n`;
+    menu += `${itemsPerPage + 2}. ${label.prevPage}\n`;
   }
-  menu += `0. Back to Shop Menu`;
+  menu += `0. ${label.back}`;
   
   return menu;
 }
 
-function buildCartView(cart) {
+function buildCartView(cart, lang = 'en') {
   console.log('[USSD] Cart contents:', JSON.stringify(cart, null, 2));
   
+  const labels = {
+    en: {
+      empty: 'Your cart is empty',
+      goShopping: 'Go Shopping',
+      backMain: 'Back to Main Menu',
+      cartTitle: 'Your Cart:',
+      total: 'Total:',
+      checkout: 'Checkout',
+      clearCart: 'Clear Cart'
+    },
+    sw: {
+      empty: 'Kikapu chako ni tupu',
+      goShopping: 'Nenda Ununuzi',
+      backMain: 'Rudi Menyu Kuu',
+      cartTitle: 'Kikapu Chako:',
+      total: 'Jumla:',
+      checkout: 'Lipa',
+      clearCart: 'Safisha Kikapu'
+    }
+  };
+  
+  const label = labels[lang] || labels.en;
+  
   if (cart.items.length === 0) {
-    return `CON Your cart is empty
-1. Go Shopping
-0. Back to Main Menu`;
+    return `CON ${label.empty}
+1. ${label.goShopping}
+0. ${label.backMain}`;
   }
   
-  let menu = `CON Your Cart:\n`;
+  let menu = `CON ${label.cartTitle}\n`;
   cart.items.forEach((item, index) => {
     menu += `${index + 1}. ${item.quantity}x ${item.name} - ${item.subtotal} TZS\n`;
   });
-  menu += `\nTotal: ${cart.total} TZS\n`;
-  menu += `${cart.items.length + 1}. Checkout\n`;
-  menu += `${cart.items.length + 2}. Clear Cart\n`;
-  menu += `0. Back to Main Menu`;
+  menu += `\n${label.total} ${cart.total} TZS\n`;
+  menu += `${cart.items.length + 1}. ${label.checkout}\n`;
+  menu += `${cart.items.length + 2}. ${label.clearCart}\n`;
+  menu += `0. ${label.backMain}`;
   
   return menu;
 }
@@ -136,51 +211,92 @@ router.post('/', async (req, res) => {
     
     let response = '';
     
-    // Main menu - first time (empty text)
-    if (text === '') {
-      response = buildMainMenu();
-      session.menu = MENUS.MAIN;
+    // Language selection - first time user
+    if (text === '' || session.menu === 'language_selection') {
+      if (text === '') {
+        response = buildLanguageMenu();
+        session.menu = 'language_selection';
+      } else if (textArray.length === 1) {
+        // Handle language selection
+        if (lastInput === '1') {
+          session.language = 'en';
+          response = buildMainMenu('en');
+          session.menu = MENUS.MAIN;
+        } else if (lastInput === '2') {
+          session.language = 'sw';
+          response = buildMainMenu('sw');
+          session.menu = MENUS.MAIN;
+        } else {
+          response = `END Invalid selection. Please try again.`;
+          clearSession(sessionId, phoneNumber);
+        }
+      }
     }
     
-    // Level 1: Main menu selections (text = "1", "2", "3", "4", "0")
-    else if (textArray.length === 1) {
+    // Main menu - after language selection
+    
+    // Level 1: Main menu selections (text = "1", "2", "3", "4", "5", "0")
+    else if (textArray.length === 1 && session.menu === MENUS.MAIN) {
+      const lang = session.language || 'en';
+      const messages = {
+        en: {
+          noOrders: 'No previous orders found.',
+          recentOrders: 'Recent Orders:',
+          goodbye: 'Thank you for using POS Store!',
+          invalid: 'Invalid selection. Please try again.'
+        },
+        sw: {
+          noOrders: 'Hakuna maagizo ya awali.',
+          recentOrders: 'Maagizo ya Hivi Karibuni:',
+          goodbye: 'Asante kwa kutumia POS Store!',
+          invalid: 'Chaguo batili. Jaribu tena.'
+        }
+      };
+      const msg = messages[lang] || messages.en;
+      
       switch (lastInput) {
         case '1': // Shop Products
-          response = buildShopMenu();
+          response = buildShopMenu(lang);
           session.menu = MENUS.SHOP;
           break;
           
         case '2': // View Cart
           const cart = POSService.getCart(phoneNumber);
-          response = buildCartView(cart);
+          response = buildCartView(cart, lang);
           session.menu = MENUS.CART;
           break;
           
         case '3': // Wallet
-          response = buildWalletMenu();
+          response = buildWalletMenu(lang);
           session.menu = MENUS.WALLET;
           break;
           
         case '4': // Order History
           const orders = POSService.getOrderHistory(phoneNumber, 3);
           if (orders.length === 0) {
-            response = `END No previous orders found.`;
+            response = `END ${msg.noOrders}`;
           } else {
-            response = `END Recent Orders:\n`;
+            response = `END ${msg.recentOrders}\n`;
             orders.forEach(order => {
-              response += `${order.id}: ${order.total} TZS (${order.items.length} items)\n`;
+              response += `${order.id}: ${order.total} TZS (${order.items.length} ${lang === 'sw' ? 'bidhaa' : 'items'})\n`;
             });
           }
           clearSession(sessionId, phoneNumber);
           break;
           
+        case '5': // Call to Shop
+          const voiceResult = await initiateVoiceCall(phoneNumber);
+          response = `END ${voiceResult.message}`;
+          clearSession(sessionId, phoneNumber);
+          break;
+          
         case '0': // Exit
-          response = `END Thank you for using POS Store!`;
+          response = `END ${msg.goodbye}`;
           clearSession(sessionId, phoneNumber);
           break;
           
         default:
-          response = `END Invalid selection. Please try again.`;
+          response = `END ${msg.invalid}`;
           clearSession(sessionId, phoneNumber);
       }
     }
@@ -663,5 +779,43 @@ router.post('/', async (req, res) => {
     res.send('END Service temporarily unavailable. Please try again.');
   }
 });
+
+// Initiate voice call for shopping
+async function initiateVoiceCall(phoneNumber) {
+  try {
+    const at = require('../config/at');
+    const voice = at.VOICE;
+    
+    // Voice call options with language selection callback
+    const host = process.env.HOST || 'localhost:3000';
+    const callbackUrl = `https://${host}/voice/shop-lang`;
+    
+    const options = {
+      to: phoneNumber,
+      from: process.env.AT_VOICE_PHONE_NUMBER || '+254711000000', // Your voice number
+      callbackUrl: callbackUrl
+    };
+    
+    console.log(`[USSD] Initiating voice shopping call to ${phoneNumber}`);
+    console.log(`[USSD] Voice callback URL: ${callbackUrl}`);
+    
+    // Make the voice call
+    const response = await voice.call(options);
+    
+    console.log('[USSD] Voice call response:', response);
+    
+    return {
+      success: true,
+      message: `Voice shopping call initiated to ${phoneNumber}. You will receive a call shortly. Choose your language then follow voice prompts to shop.`
+    };
+    
+  } catch (error) {
+    console.error('[USSD] Voice call error:', error);
+    return {
+      success: false,
+      message: 'Voice call service temporarily unavailable. Please use USSD shopping instead.'
+    };
+  }
+}
 
 module.exports = router;
