@@ -274,7 +274,16 @@ router.post('/', async (req, res) => {
       const cart = POSService.getCart(phoneNumber);
       const selection = parseInt(lastInput);
       
-      if (selection >= 1 && selection <= cart.items.length) {
+      // Handle empty cart - "Go Shopping" option
+      if (cart.items.length === 0 && selection === 1) {
+        // Go directly to product list
+        const products = POSService.getProducts();
+        response = buildProductList(products);
+        session.menu = MENUS.PRODUCT_LIST;
+        session.data.products = products;
+        session.data.page = 1;
+      }
+      else if (selection >= 1 && selection <= cart.items.length) {
         response = `END Item removal not implemented in USSD. Use SMS: "clear"`;
         clearSession(sessionId, phoneNumber);
       }
@@ -289,6 +298,31 @@ router.post('/', async (req, res) => {
         POSService.clearCart(phoneNumber);
         response = `END Cart cleared successfully.`;
         clearSession(sessionId, phoneNumber);
+      }
+      else if (selection === 0) {
+        // Back to main menu
+        response = buildMainMenu();
+        session.menu = MENUS.MAIN;
+      }
+      else {
+        response = `END Invalid selection.`;
+        clearSession(sessionId, phoneNumber);
+      }
+    }
+    
+    // Level 2: Cart menu selections (text = "2*1", "2*0", etc.)
+    else if (textArray.length === 2 && textArray[0] === '2') {
+      const cart = POSService.getCart(phoneNumber);
+      const selection = parseInt(lastInput);
+      
+      // Handle empty cart - "Go Shopping" option
+      if (cart.items.length === 0 && selection === 1) {
+        // Go directly to product list
+        const products = POSService.getProducts();
+        response = buildProductList(products);
+        session.menu = MENUS.PRODUCT_LIST;
+        session.data.products = products;
+        session.data.page = 1;
       }
       else if (selection === 0) {
         // Back to main menu
