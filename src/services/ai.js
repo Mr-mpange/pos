@@ -1,7 +1,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const API_KEY = process.env.GEMINI_API_KEY;
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest';
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 let genAI;
 let model;
 
@@ -30,7 +30,9 @@ async function generateReply(userText, phoneNumber) {
     const m = getModel();
     const result = await m.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
     const text = result?.response?.text?.() || result?.response?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return sanitizeReply(text);
+    const reply = sanitizeReply(text);
+    console.log(`[AI] Generated reply: "${reply}"`);
+    return reply;
   } catch (err) {
     console.warn('[AI] generateReply failed:', err.message);
     return 'Thanks for your message! (AI temporarily unavailable)';
