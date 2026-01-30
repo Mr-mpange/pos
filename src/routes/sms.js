@@ -118,7 +118,7 @@ router.post('/bulk', async (req, res) => {
 router.post('/inbound', async (req, res) => {
   try {
     const { text, from, to, date, id, linkId } = req.body;
-    const debug = req.query.debug === '1' || req.header('x-debug') === '1';
+    const debug = req.query.debug === '1' || req.header('x-debug') === '1' || true;
     console.log('[Inbound SMS]', { text, from, to, date, id, linkId, debug });
     const isSandbox = (process.env.AT_USERNAME || 'sandbox') === 'sandbox';
     console.log('[Inbound SMS][Env]', { isSandbox, username: process.env.AT_USERNAME || 'sandbox' });
