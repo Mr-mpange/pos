@@ -1,6 +1,7 @@
 const express = require('express');
 const at = require('../config/at');
 const { generateReply } = require('../services/ai');
+const PaymentService = require('../services/payments');
 
 const router = express.Router();
 const sms = at.SMS;
@@ -128,6 +129,11 @@ router.post('/inbound', async (req, res) => {
     }
     if (typeof text !== 'string') {
       console.warn('[Inbound SMS][Guard] Missing or invalid "text" in payload');
+    }
+
+    // Auto-register user for payments when they send any message
+    if (from && typeof text === 'string') {
+      PaymentService.registerUser(from);
     }
 
     // AI-powered reply using Gemini
