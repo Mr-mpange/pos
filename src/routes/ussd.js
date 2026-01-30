@@ -551,6 +551,38 @@ router.post('/', async (req, res) => {
       }
     }
     
+    // Handle cart menu (session-based fallback for any level)
+    else if (session.menu === MENUS.CART) {
+      const cart = POSService.getCart(phoneNumber);
+      const selection = parseInt(lastInput);
+      
+      if (selection >= 1 && selection <= cart.items.length) {
+        response = `END Item removal not implemented in USSD. Use SMS: "clear"`;
+        clearSession(sessionId, phoneNumber);
+      }
+      else if (selection === cart.items.length + 1) {
+        // Checkout
+        const checkoutResult = await POSService.processCheckout(phoneNumber);
+        response = `END ${checkoutResult.message}`;
+        clearSession(sessionId, phoneNumber);
+      }
+      else if (selection === cart.items.length + 2) {
+        // Clear cart
+        POSService.clearCart(phoneNumber);
+        response = `END Cart cleared successfully.`;
+        clearSession(sessionId, phoneNumber);
+      }
+      else if (selection === 0) {
+        // Back to main menu
+        response = buildMainMenu();
+        session.menu = MENUS.MAIN;
+      }
+      else {
+        response = `END Invalid selection.`;
+        clearSession(sessionId, phoneNumber);
+      }
+    }
+    
     // Handle special flows (send money, add money)
     else if (session.menu === 'send_money_number') {
       session.data.recipient = lastInput;

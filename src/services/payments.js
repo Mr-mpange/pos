@@ -146,6 +146,30 @@ class PaymentService {
     return account;
   }
 
+  // Deduct money from user account
+  static deductMoney(phoneNumber, amount) {
+    this.registerUser(phoneNumber); // Auto-register if not already
+    const account = userBalances.get(phoneNumber);
+    
+    if (!account || account.balance < amount) {
+      return {
+        success: false,
+        message: `Insufficient balance. Available: ${account?.balance || 0} TZS, Required: ${amount} TZS`
+      };
+    }
+    
+    account.balance -= amount;
+    userBalances.set(phoneNumber, account);
+    
+    console.log(`[Payment] Deducted ${amount} TZS from ${phoneNumber}. New balance: ${account.balance} TZS`);
+    
+    return {
+      success: true,
+      message: `Deducted ${amount} TZS successfully`,
+      newBalance: account.balance
+    };
+  }
+
   // Get registered users count
   static getRegisteredUsersCount() {
     return registeredUsers.size;

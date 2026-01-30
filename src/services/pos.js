@@ -109,21 +109,12 @@ class POSService {
     return { success: true, message: 'Cart cleared' };
   }
 
-  // Process checkout
+  // Process checkout with PUSH payment
   static async processCheckout(phoneNumber) {
     const cart = this.getCart(phoneNumber);
     
     if (cart.items.length === 0) {
       return { success: false, message: 'Cart is empty' };
-    }
-
-    // Check user balance
-    const balance = PaymentService.getBalance(phoneNumber);
-    if (balance.balance < cart.total) {
-      return {
-        success: false,
-        message: `Insufficient balance. Need ${cart.total} TZS, have ${balance.balance} TZS`
-      };
     }
 
     // Check stock availability
@@ -138,52 +129,40 @@ class POSService {
     }
 
     try {
-      // Process payment
-      const paymentResult = await PaymentService.processPayment(
-        phoneNumber,
-        process.env.POS_MERCHANT_NUMBER || '+255000000000', // Merchant number
-        cart.total,
-        'POS Purchase'
-      );
-
-      if (!paymentResult.success) {
-        return paymentResult;
-      }
-
-      // Update stock
-      for (const item of cart.items) {
-        const product = products.get(item.productId);
-        product.stock -= item.quantity;
-        products.set(item.productId, product);
-      }
-
-      // Create order
+      // Generate order ID first
       const orderId = `ORD${Date.now()}${Math.random().toString(36).substr(2, 4)}`;
-      const order = {
+      
+      // Initiate PUSH payment request
+      const pushResult = await this.initiatePushPayment(phoneNumber, cart.total, orderId);
+      
+      if (!pushResult.success) {
+        return pushResult;
+      }
+
+      // Store pending order
+      const pendingOrder = {
         id: orderId,
         phoneNumber,
         items: [...cart.items],
         total: cart.total,
         timestamp: new Date(),
-        status: 'completed',
-        paymentId: paymentResult.transactionId
+        status: 'pending_payment',
+        pushRequestId: pushResult.requestId
       };
+      
+      // Store in pending orders (in production, use database)
+      if (!this.pendingOrders) {
+        this.pendingOrders = new Map();
+      }
+      this.pendingOrders.set(orderId, pendingOrder);
 
-      // Save order history
-      const userOrders = orderHistory.get(phoneNumber) || [];
-      userOrders.push(order);
-      orderHistory.set(phoneNumber, userOrders);
-
-      // Clear cart
-      this.clearCart(phoneNumber);
-
-      console.log(`[POS] Order completed: ${orderId} for ${phoneNumber} - ${cart.total} TZS`);
-
+      console.log(`[POS] PUSH payment initiated for order ${orderId}`);
+      
       return {
         success: true,
-        message: `Order completed! Order ID: ${orderId}. Total: ${cart.total} TZS. New balance: ${balance.balance - cart.total} TZS`,
-        order,
-        orderId
+        message: `Payment request sent to ${phoneNumber}. Please check your phone and enter PIN to confirm payment of ${cart.total} TZS`,
+        orderId,
+        status: 'pending_payment'
       };
 
     } catch (error) {
@@ -192,6 +171,150 @@ class POSService {
         success: false,
         message: 'Checkout failed. Please try again.'
       };
+    }
+  }
+
+  // Simulate PUSH payment initiation
+  static async initiatePushPayment(phoneNumber, amount, orderId) {
+    try {
+      // In real implementation, this would call mobile money API (M-Pesa, Tigo Pesa, etc.)
+      // For demo, we simulate the PUSH request
+      
+      const requestId = `PUSH${Date.now()}${Math.random().toString(36).substr(2, 4)}`;
+      
+      console.log(`[POS] Initiating PUSH payment: ${amount} TZS to ${phoneNumber} for order ${orderId}`);
+      
+      // Simulate delay and auto-confirm payment after 3 seconds
+      setTimeout(async () => {
+        await this.confirmPayment(orderId, requestId, true);
+      }, 3000);
+      
+      return {
+        success: true,
+        requestId,
+        message: 'PUSH payment request sent'
+      };
+      
+    } catch (error) {
+      console.error('[POS] PUSH payment error:', error);
+      return {
+        success: false,
+        message: 'Failed to initiate payment'
+      };
+    }
+  }
+
+  // Confirm payment and send SMS
+  static async confirmPayment(orderId, requestId, isConfirmed) {
+    try {
+      if (!this.pendingOrders) {
+        console.error('[POS] No pending orders found');
+        return;
+      }
+
+      const pendingOrder = this.pendingOrders.get(orderId);
+      if (!pendingOrder) {
+        console.error(`[POS] Pending order ${orderId} not found`);
+        return;
+      }
+
+      if (isConfirmed) {
+        // Process successful payment
+        const phoneNumber = pendingOrder.phoneNumber;
+        
+        // Deduct money from user balance
+        const deductResult = PaymentService.deductMoney(phoneNumber, pendingOrder.total);
+        if (!deductResult.success) {
+          console.error('[POS] Failed to deduct money:', deductResult.message);
+          await this.sendPaymentSMS(phoneNumber, `Payment failed: ${deductResult.message}`, orderId);
+          return;
+        }
+
+        // Update stock
+        for (const item of pendingOrder.items) {
+          const product = products.get(item.productId);
+          product.stock -= item.quantity;
+          products.set(item.productId, product);
+        }
+
+        // Create completed order
+        const completedOrder = {
+          ...pendingOrder,
+          status: 'completed',
+          paymentConfirmedAt: new Date(),
+          transactionId: `TX${Date.now()}${Math.random().toString(36).substr(2, 4)}`
+        };
+
+        // Save to order history
+        const userOrders = orderHistory.get(phoneNumber) || [];
+        userOrders.push(completedOrder);
+        orderHistory.set(phoneNumber, userOrders);
+
+        // Clear cart
+        this.clearCart(phoneNumber);
+
+        // Remove from pending orders
+        this.pendingOrders.delete(orderId);
+
+        console.log(`[POS] Payment confirmed for order ${orderId}`);
+
+        // Send SMS confirmation
+        const smsMessage = `Payment Confirmed!
+Order: ${orderId}
+Amount: ${pendingOrder.total} TZS
+Items: ${pendingOrder.items.length}
+Balance: ${deductResult.newBalance} TZS
+Thank you for shopping with us!`;
+
+        await this.sendPaymentSMS(phoneNumber, smsMessage, orderId);
+
+      } else {
+        // Payment cancelled/failed
+        console.log(`[POS] Payment cancelled for order ${orderId}`);
+        
+        // Remove from pending orders
+        this.pendingOrders.delete(orderId);
+
+        // Send SMS notification
+        await this.sendPaymentSMS(pendingOrder.phoneNumber, `Payment cancelled for order ${orderId}. Items remain in cart.`, orderId);
+      }
+
+    } catch (error) {
+      console.error('[POS] Payment confirmation error:', error);
+    }
+  }
+
+  // Send SMS confirmation
+  static async sendPaymentSMS(phoneNumber, message, orderId) {
+    try {
+      const at = require('../config/at');
+      const sms = at.SMS;
+      
+      const options = {
+        to: [phoneNumber],
+        message: message
+      };
+
+      // Add sender ID if not in sandbox
+      const isSandbox = (process.env.AT_USERNAME || 'sandbox') === 'sandbox';
+      if (!isSandbox && process.env.AT_FROM_SHORTCODE) {
+        options.from = String(process.env.AT_FROM_SHORTCODE);
+      }
+
+      console.log(`[POS] Sending SMS confirmation for order ${orderId} to ${phoneNumber}`);
+      
+      const response = await sms.send(options);
+      const firstRecipient = response?.SMSMessageData?.Recipients?.[0];
+      
+      console.log('[POS] SMS sent:', {
+        status: firstRecipient?.status || 'UNKNOWN',
+        statusCode: firstRecipient?.statusCode,
+        messageId: firstRecipient?.messageId,
+        cost: firstRecipient?.cost,
+      });
+
+    } catch (error) {
+      console.error('[POS] SMS sending error:', error);
     }
   }
 
