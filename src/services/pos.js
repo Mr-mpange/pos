@@ -258,15 +258,27 @@ class POSService {
 
         console.log(`[POS] Payment confirmed for order ${orderId}`);
 
-        // Send SMS confirmation
-        const smsMessage = `Payment Confirmed!
+        // Send SMS confirmation to both buyer and merchant
+        const buyerSMS = `Payment Confirmed!
 Order: ${orderId}
 Amount: ${pendingOrder.total} TZS
 Items: ${pendingOrder.items.length}
 Balance: ${deductResult.newBalance} TZS
 Thank you for shopping with us!`;
 
-        await this.sendPaymentSMS(phoneNumber, smsMessage, orderId);
+        const merchantSMS = `New Sale Received!
+Order: ${orderId}
+Customer: ${phoneNumber}
+Amount: ${pendingOrder.total} TZS
+Items: ${pendingOrder.items.map(item => `${item.quantity}x ${item.name}`).join(', ')}
+Time: ${new Date().toLocaleString()}`;
+
+        // Send SMS to buyer
+        await this.sendPaymentSMS(phoneNumber, buyerSMS, orderId, 'buyer');
+        
+        // Send SMS to merchant (store owner)
+        const merchantNumber = process.env.MERCHANT_PHONE || '+255683859574'; // Default to your number
+        await this.sendPaymentSMS(merchantNumber, merchantSMS, orderId, 'merchant');
 
       } else {
         // Payment cancelled/failed
@@ -275,8 +287,14 @@ Thank you for shopping with us!`;
         // Remove from pending orders
         this.pendingOrders.delete(orderId);
 
-        // Send SMS notification
-        await this.sendPaymentSMS(pendingOrder.phoneNumber, `Payment cancelled for order ${orderId}. Items remain in cart.`, orderId);
+        // Send SMS notification to both buyer and merchant
+        const cancelSMS = `Payment cancelled for order ${orderId}. Items remain in cart.`;
+        await this.sendPaymentSMS(pendingOrder.phoneNumber, cancelSMS, orderId, 'buyer');
+        
+        // Notify merchant of cancelled order
+        const merchantNumber = process.env.MERCHANT_PHONE || '+255683859574';
+        const merchantCancelSMS = `Order Cancelled: ${orderId} - Customer: ${pendingOrder.phoneNumber}`;
+        await this.sendPaymentSMS(merchantNumber, merchantCancelSMS, orderId, 'merchant');
       }
 
     } catch (error) {
@@ -285,7 +303,7 @@ Thank you for shopping with us!`;
   }
 
   // Send SMS confirmation
-  static async sendPaymentSMS(phoneNumber, message, orderId) {
+  static async sendPaymentSMS(phoneNumber, message, orderId, recipient = 'buyer') {
     try {
       const at = require('../config/at');
       const sms = at.SMS;
@@ -301,12 +319,12 @@ Thank you for shopping with us!`;
         options.from = String(process.env.AT_FROM_SHORTCODE);
       }
 
-      console.log(`[POS] Sending SMS confirmation for order ${orderId} to ${phoneNumber}`);
+      console.log(`[POS] Sending SMS to ${recipient} (${phoneNumber}) for order ${orderId}`);
       
       const response = await sms.send(options);
       const firstRecipient = response?.SMSMessageData?.Recipients?.[0];
       
-      console.log('[POS] SMS sent:', {
+      console.log(`[POS] SMS sent to ${recipient}:`, {
         status: firstRecipient?.status || 'UNKNOWN',
         statusCode: firstRecipient?.statusCode,
         messageId: firstRecipient?.messageId,
@@ -314,7 +332,7 @@ Thank you for shopping with us!`;
       });
 
     } catch (error) {
-      console.error('[POS] SMS sending error:', error);
+      console.error(`[POS] SMS sending error to ${recipient}:`, error);
     }
   }
 
