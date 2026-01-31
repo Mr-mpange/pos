@@ -2,6 +2,7 @@ const express = require('express');
 const at = require('../config/at');
 const POSService = require('../services/pos');
 const PaymentService = require('../services/payments');
+const SMSService = require('../services/sms');
 
 const router = express.Router();
 
@@ -300,23 +301,35 @@ router.post('/', async (req, res) => {
             const orders = POSService.getOrderHistory(phoneNumber, 3);
             if (orders.length === 0) {
               response = `END ${msg.noOrders}`;
+              // Send SMS with no orders message
+              SMSService.sendOrderHistory(phoneNumber, [], lang).catch(err => 
+                console.error('[USSD] SMS send error:', err)
+              );
             } else {
               response = `END ${msg.recentOrders}\n`;
               orders.forEach(order => {
                 const totalFormatted = order.total.toLocaleString();
                 response += `${order.orderNumber || order.id}: ${totalFormatted} TZS (${order.items.length} ${lang === 'sw' ? 'bidhaa' : 'items'})\n`;
               });
+              // Send SMS with order history
+              SMSService.sendOrderHistory(phoneNumber, orders, lang).catch(err => 
+                console.error('[USSD] SMS send error:', err)
+              );
             }
             clearSession(sessionId, phoneNumber);
             break;
             
           case '5': // Call to Shop
-            console.log('[USSD] Initiating voice call for shopping');
-            const voiceResult = await initiateVoiceCall(phoneNumber);
+            console.log('[USSD] Showing voice call instructions');
+            const voiceNumber = process.env.AT_VOICE_PHONE_NUMBER || '+255699997983';
             const voiceMessage = lang === 'sw' ? 
-              `Simu ya ununuzi imeanzishwa! Utapokea simu hivi karibuni. Chagua lugha yako kisha fuata maelekezo ya sauti kununua.` :
-              `Voice shopping call initiated! You will receive a call shortly. Choose your language then follow voice prompts to shop.`;
+              `Piga simu ${voiceNumber} kwa ununuzi wa sauti. Chagua lugha yako kisha fuata maelekezo ya sauti kununua.` :
+              `Call ${voiceNumber} for voice shopping. Choose your language then follow voice prompts to shop.`;
             response = `END ${voiceMessage}`;
+            // Send SMS with voice instructions
+            SMSService.sendVoiceInstructions(phoneNumber, voiceNumber, lang).catch(err => 
+              console.error('[USSD] SMS send error:', err)
+            );
             clearSession(sessionId, phoneNumber);
             break;
             
@@ -373,23 +386,35 @@ router.post('/', async (req, res) => {
           const orders = POSService.getOrderHistory(phoneNumber, 3);
           if (orders.length === 0) {
             response = `END ${msg.noOrders}`;
+            // Send SMS with no orders message
+            SMSService.sendOrderHistory(phoneNumber, [], lang).catch(err => 
+              console.error('[USSD] SMS send error:', err)
+            );
           } else {
             response = `END ${msg.recentOrders}\n`;
             orders.forEach(order => {
               const totalFormatted = order.total.toLocaleString();
               response += `${order.orderNumber || order.id}: ${totalFormatted} TZS (${order.items.length} ${lang === 'sw' ? 'bidhaa' : 'items'})\n`;
             });
+            // Send SMS with order history
+            SMSService.sendOrderHistory(phoneNumber, orders, lang).catch(err => 
+              console.error('[USSD] SMS send error:', err)
+            );
           }
           clearSession(sessionId, phoneNumber);
           break;
           
         case '5': // Call to Shop
-          console.log('[USSD] Initiating voice call for shopping');
-          const voiceResult = await initiateVoiceCall(phoneNumber);
+          console.log('[USSD] Showing voice call instructions');
+          const voiceNumber = process.env.AT_VOICE_PHONE_NUMBER || '+255699997983';
           const voiceMessage = lang === 'sw' ? 
-            `Simu ya ununuzi imeanzishwa! Utapokea simu hivi karibuni. Chagua lugha yako kisha fuata maelekezo ya sauti kununua.` :
-            `Voice shopping call initiated! You will receive a call shortly. Choose your language then follow voice prompts to shop.`;
+            `Piga simu ${voiceNumber} kwa ununuzi wa sauti. Chagua lugha yako kisha fuata maelekezo ya sauti kununua.` :
+            `Call ${voiceNumber} for voice shopping. Choose your language then follow voice prompts to shop.`;
           response = `END ${voiceMessage}`;
+          // Send SMS with voice instructions
+          SMSService.sendVoiceInstructions(phoneNumber, voiceNumber, lang).catch(err => 
+            console.error('[USSD] SMS send error:', err)
+          );
           clearSession(sessionId, phoneNumber);
           break;
           
@@ -451,6 +476,10 @@ router.post('/', async (req, res) => {
         case '1': // Check Balance
           const balance = PaymentService.getBalance(phoneNumber);
           response = `END Your balance: ${balance.balance.toLocaleString()} ${balance.currency}`;
+          // Send SMS with balance information
+          SMSService.sendBalanceInquiry(phoneNumber, balance, lang).catch(err => 
+            console.error('[USSD] SMS send error:', err)
+          );
           clearSession(sessionId, phoneNumber);
           break;
           
@@ -472,6 +501,15 @@ router.post('/', async (req, res) => {
               response += `${type} ${tx.amount.toLocaleString()} TZS ${type === 'Sent' ? 'to' : 'from'} ${other}\n`;
             });
           }
+          // Send SMS with transaction history
+          const transactionSummary = {
+            amount: transactions.reduce((sum, tx) => sum + tx.amount, 0),
+            count: transactions.length,
+            type: 'Transaction History'
+          };
+          SMSService.sendTransactionConfirmation(phoneNumber, transactionSummary, lang).catch(err => 
+            console.error('[USSD] SMS send error:', err)
+          );
           clearSession(sessionId, phoneNumber);
           break;
           
@@ -514,6 +552,12 @@ router.post('/', async (req, res) => {
         // Checkout
         const checkoutResult = await POSService.processCheckout(phoneNumber);
         response = `END ${checkoutResult.message}`;
+        // Send SMS confirmation for checkout
+        if (checkoutResult.success && checkoutResult.order) {
+          SMSService.sendOrderConfirmation(phoneNumber, checkoutResult.order, lang).catch(err => 
+            console.error('[USSD] SMS send error:', err)
+          );
+        }
         clearSession(sessionId, phoneNumber);
       }
       else if (selection === cart.items.length + 2) {
@@ -619,6 +663,12 @@ router.post('/', async (req, res) => {
           // Checkout
           const checkoutResult = await POSService.processCheckout(phoneNumber);
           response = `END ${checkoutResult.message}`;
+          // Send SMS confirmation for checkout
+          if (checkoutResult.success && checkoutResult.order) {
+            SMSService.sendOrderConfirmation(phoneNumber, checkoutResult.order, lang).catch(err => 
+              console.error('[USSD] SMS send error:', err)
+            );
+          }
           clearSession(sessionId, phoneNumber);
         }
         else if (selection === cart.items.length + 2) {
@@ -706,6 +756,12 @@ router.post('/', async (req, res) => {
         case '3': // Checkout
           const checkoutResult = await POSService.processCheckout(phoneNumber);
           response = `END ${checkoutResult.message}`;
+          // Send SMS confirmation for checkout
+          if (checkoutResult.success && checkoutResult.order) {
+            SMSService.sendOrderConfirmation(phoneNumber, checkoutResult.order, session.language || 'en').catch(err => 
+              console.error('[USSD] SMS send error:', err)
+            );
+          }
           clearSession(sessionId, phoneNumber);
           break;
           
@@ -735,6 +791,17 @@ router.post('/', async (req, res) => {
       } else {
         const result = await PaymentService.processPayment(phoneNumber, recipient, amount, 'USSD Transfer');
         response = `END ${result.message}`;
+        // Send SMS confirmation for money transfer
+        if (result.success) {
+          const transaction = {
+            amount: amount,
+            type: 'Money Transfer',
+            recipient: recipient
+          };
+          SMSService.sendTransactionConfirmation(phoneNumber, transaction, session.language || 'en').catch(err => 
+            console.error('[USSD] SMS send error:', err)
+          );
+        }
       }
       clearSession(sessionId, phoneNumber);
     }
@@ -745,6 +812,15 @@ router.post('/', async (req, res) => {
       } else {
         const newBalance = PaymentService.addMoney(phoneNumber, amount);
         response = `END Added ${amount.toLocaleString()} TZS. New balance: ${newBalance.balance.toLocaleString()} TZS`;
+        // Send SMS confirmation for money added
+        const transaction = {
+          amount: amount,
+          type: 'Money Added',
+          newBalance: newBalance.balance
+        };
+        SMSService.sendTransactionConfirmation(phoneNumber, transaction, session.language || 'en').catch(err => 
+          console.error('[USSD] SMS send error:', err)
+        );
       }
       clearSession(sessionId, phoneNumber);
     }
@@ -781,83 +857,5 @@ router.post('/', async (req, res) => {
     res.send('END Service temporarily unavailable. Please try again.');
   }
 });
-
-// Initiate voice call for shopping
-async function initiateVoiceCall(phoneNumber) {
-  try {
-    console.log(`[USSD] Starting voice call initiation for ${phoneNumber}`);
-    
-    // Check if we're in sandbox mode
-    const isSandbox = (process.env.AT_USERNAME || 'sandbox') === 'sandbox';
-    
-    if (isSandbox) {
-      console.log('[USSD] Voice calls not available in sandbox mode');
-      return {
-        success: false,
-        message: 'Voice shopping not available in demo mode. Please use USSD shopping instead.'
-      };
-    }
-    
-    const at = require('../config/at');
-    const voice = at.VOICE;
-    
-    // Voice call options with language selection callback
-    const host = process.env.HOST || 'localhost:3000';
-    const callbackUrl = `https://${host}/voice/shop-lang`;
-    
-    const options = {
-      callTo: phoneNumber,
-      callFrom: process.env.AT_VOICE_PHONE_NUMBER || '+254711082306',
-      callbackUrl: callbackUrl
-    };
-    
-    console.log(`[USSD] Voice call options:`, options);
-    
-    // Make the voice call
-    const response = await voice.call(options);
-    
-    console.log('[USSD] Voice call API response:', response);
-    
-    // Check if the call was successful
-    if (response && (response.status === 'Queued' || response.sessionId)) {
-      return {
-        success: true,
-        message: `Voice shopping call initiated! You will receive a call shortly. Choose your language then follow voice prompts to shop.`
-      };
-    } else {
-      console.warn('[USSD] Voice call may have failed:', response);
-      return {
-        success: true,
-        message: `Voice shopping call requested for ${phoneNumber}. You should receive a call shortly.`
-      };
-    }
-    
-  } catch (error) {
-    console.error('[USSD] Voice call error:', error);
-    
-    // Provide helpful error message based on error type
-    if (error.response && error.response.status === 401) {
-      return {
-        success: false,
-        message: 'Voice service not available. Please contact support to enable voice calls or use USSD shopping instead.'
-      };
-    } else if (error.message && error.message.includes('VOICE_PHONE_NUMBER')) {
-      return {
-        success: false,
-        message: 'Voice service not configured. Please use USSD shopping instead or contact support.'
-      };
-    } else if (error.message && error.message.includes('insufficient')) {
-      return {
-        success: false,
-        message: 'Voice service temporarily unavailable due to low balance. Please use USSD shopping instead.'
-      };
-    } else {
-      return {
-        success: false,
-        message: 'Voice call service temporarily unavailable. Please use USSD shopping instead.'
-      };
-    }
-  }
-}
 
 module.exports = router;

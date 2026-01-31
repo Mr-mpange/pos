@@ -1,29 +1,67 @@
 const express = require('express');
 const at = require('../config/at');
 const axios = require('axios');
+const SMSService = require('../services/sms');
 
 const router = express.Router();
 const voice = at.VOICE;
 
-// POST /voice/call - initiate a call from AT number to a recipient
+// POST /voice/call - initiate a call with correct direction
 router.post('/call', async (req, res) => {
+  // Check if this is a callback from AfricaTalking (has callSessionState)
+  if (req.body && req.body.callSessionState) {
+    console.log('[Voice Call Callback]', req.body);
+    
+    // This is a callback from AfricaTalking during an active call
+    // We should redirect to the proper voice actions endpoint
+    res.set('Content-Type', 'application/xml');
+    
+    const isActive = req.body && String(req.body.isActive);
+    
+    // If call is not active, return empty response
+    if (isActive === '0') {
+      return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    }
+    
+    // Redirect to the shopping language selection
+    const host = req.get('host');
+    const baseUrl = `https://${host}`;
+    const shopLangUrl = `${baseUrl}${req.baseUrl}/shop-lang`;
+    
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Redirect>${shopLangUrl}</Redirect>
+</Response>`;
+    return res.send(xml);
+  }
+  
+  // This is a call initiation request
   try {
-    // Allow defaults from .env for convenience
-    const envFrom = process.env.AT_VOICE_PHONE_NUMBER;
-    const envTo = process.env.DEFAULT_RECIPIENT;
+    // Get parameters with correct direction
     const bodyFrom = req.body && req.body.callFrom;
     const bodyTo = req.body && req.body.callTo;
-    const callFrom = bodyFrom || envFrom; // must be your AT voice number
-    const callTo = bodyTo || envTo;       // destination/callee
+    
+    // Default: AfricaTalking calls the user
+    const callFrom = bodyFrom || process.env.AT_VOICE_PHONE_NUMBER || '+255699997983';   // Voice service number (must be yours)
+    const callTo = bodyTo || process.env.DEFAULT_RECIPIENT || '+255683859574';  // User's number (destination)
 
     if (!callFrom || !callTo) {
-      return res.status(400).json({ error: 'callFrom and callTo are required (provide in body or set AT_VOICE_PHONE_NUMBER and DEFAULT_RECIPIENT in .env)' });
+      return res.status(400).json({ error: 'callFrom and callTo are required' });
     }
 
-    // First try SDK
+    // Set the callback URL to the shopping language selection
+    const host = req.get('host') || process.env.HOST;
+    const baseUrl = `https://${host}`;
+    const callbackUrl = `${baseUrl}/voice/shop-lang`;
+
+    // First try SDK with callback URL
     try {
-      const result = await voice.call({ callFrom, callTo });
-      return res.json({ ok: true, via: 'sdk', used: { callFrom, callTo }, result });
+      const result = await voice.call({ 
+        callFrom, 
+        callTo,
+        callbackUrl
+      });
+      return res.json({ ok: true, via: 'sdk', used: { callFrom, callTo, callbackUrl }, result });
     } catch (sdkErr) {
       console.warn('[Voice] SDK call failed, attempting REST fallback:', sdkErr.message);
       // REST fallback
@@ -36,6 +74,7 @@ router.post('/call', async (req, res) => {
       form.append('username', AT_USERNAME);
       form.append('from', callFrom);
       form.append('to', callTo);
+      form.append('callbackUrl', callbackUrl);
 
       // POST to AT Voice REST endpoint
       const voiceUrl = 'https://voice.africastalking.com/call';
@@ -52,13 +91,14 @@ router.post('/call', async (req, res) => {
         }
       );
 
-      return res.json({ ok: true, via: 'rest', used: { callFrom, callTo }, data: response.data });
+      return res.json({ ok: true, via: 'rest', used: { callFrom, callTo, callbackUrl }, data: response.data });
     }
   } catch (err) {
     console.error('Voice call error', err);
     return res.status(500).json({ error: 'Failed to initiate call', details: err.message });
   }
 });
+
 // Voice events callback
 router.post('/events', (req, res) => {
   console.log('[Voice Events]', req.body);
@@ -103,21 +143,21 @@ function handleSelectionXml(digits, lang = 'en') {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg('Thanks for calling. Ask your question via SMS and we will respond. Goodbye.', 'Asante kwa kupiga simu. Uliza swali lako kwa SMS na tutajibu. Kwaheri.')}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
   }
   if (digits === '2') {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg('Our company offers digital solutions and support. Operating hours: Monday to Friday, 8 A M to 6 P M E A T. Goodbye.', 'Kampuni yetu hutoa huduma za kidijitali na usaidizi. Saa za kazi: Jumatatu hadi Ijumaa, saa 2 asubuhi hadi saa 12 jioni E A T. Kwaheri.')}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
   }
   if (digits === '3') {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg('All agents are busy. Please try again later or send us an SMS. Goodbye.', 'Wakala wote wana hudumia wengine. Jaribu tena baadaye au tuma SMS. Kwaheri.')}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
   }
   if (digits === '4') {
@@ -130,17 +170,17 @@ function handleSelectionXml(digits, lang = 'en') {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg('Thank you. Ending the call now. Goodbye.', 'Asante. Tunakata simu sasa. Kwaheri.')}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg('Invalid choice. Goodbye.', 'Chaguo batili. Kwaheri.')}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
 }
 
-// Voice actions – Language selection then IVR menu
+// Voice actions – Entry point when users call the AfricaTalking voice number
 router.post('/actions', (req, res) => {
   console.log('[Voice Actions]', req.body);
   res.set('Content-Type', 'application/xml');
@@ -151,27 +191,22 @@ router.post('/actions', (req, res) => {
   if (isActive === '0') {
     return res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
   }
+  
   if (!digits) {
-    // Language selection (1 English, 2 Swahili)
+    // First time call - redirect directly to shopping language selection
     const host = req.get('host');
     const baseUrl = `https://${host}`;
-    const langUrl = `${baseUrl}${req.baseUrl}/lang`;
-    console.log('[Voice Actions] Using language callbackUrl:', langUrl);
-    if (isActive === '1') {
-      console.log('[Voice Actions][FIRST-HIT] Active call, serving language selection');
-    }
+    const shopLangUrl = `${baseUrl}${req.baseUrl}/shop-lang`;
+    console.log('[Voice Actions] Redirecting to shopping language selection:', shopLangUrl);
+    
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Choose language. Press 1 for English. Press 2 for Swahili.</Say>
-  <GetDigits timeout="20" numDigits="1" callbackUrl="${langUrl}">
-    <Say>Press 1 for English. Press 2 for Swahili.</Say>
-  </GetDigits>
-  <Say>No input received. Returning to language selection.</Say>
-  <Redirect>${baseUrl}/voice/actions</Redirect>
+  <Redirect>${shopLangUrl}</Redirect>
 </Response>`;
     return res.send(xml);
   }
-  // Rare case AT posts digits here; default to English
+  
+  // If digits are provided, handle them (fallback)
   return res.send(handleSelectionXml(digits, 'en'));
 });
 
@@ -199,7 +234,7 @@ router.get('/actions', (req, res) => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>You entered ${digits}. Goodbye.</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
   return res.send(xml);
 });
@@ -266,43 +301,40 @@ router.post('/shop', async (req, res) => {
   const POSService = require('../services/pos');
   const products = await POSService.getProducts();
   
-  // Use first 4 products from database (or fallback to empty array)
+  // Use first 4 products from database (or fallback to hardcoded)
   const availableProducts = products.slice(0, 4);
   
-  if (availableProducts.length === 0) {
-    const noProductsMsg = lang === 'sw' 
-      ? 'Hakuna bidhaa zinazopatikana kwa sasa. Jaribu tena baadaye.'
-      : 'No products available at the moment. Please try again later.';
-    
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>${noProductsMsg}</Say>
-  <Hangup/>
-</Response>`;
-    return res.send(xml);
-  }
-
-  // Language-specific messages
+  // Language-specific messages with dynamic products
   const messages = {
     en: {
-      welcome: `Welcome to Voice Shopping! ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name} ${p.price.toLocaleString()} shillings`).join('. ')}. Press 5 to checkout. Press 0 to end call.`,
-      options: `${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`,
-      added: (item) => `Added ${item} to cart. ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`,
+      welcome: availableProducts.length > 0 
+        ? `Welcome to Voice Shopping! ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name} ${p.price.toLocaleString()} shillings`).join('. ')}. Press 5 to checkout. Press 0 to end call.`
+        : 'Welcome to Voice Shopping! Press 1 for Coca Cola 1500 shillings. Press 2 for Bread 2000 shillings. Press 3 for Milk 3000 shillings. Press 4 for Rice 8000 shillings. Press 5 to checkout. Press 0 to end call.',
+      options: availableProducts.length > 0
+        ? `${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`
+        : 'Press 1 for Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.',
+      added: (item) => `Added ${item} to cart. Press 1 for Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.`,
+      moreAdded: (item) => `Added ${item} to cart. Press 1 for more Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.`,
       emptyCart: 'Your cart is empty. Please add items first. Ending call.',
       checkout: (total) => `Processing your order of ${total} shillings. You will receive payment confirmation shortly. Thank you for shopping with us!`,
       goodbye: 'Thank you for calling. Your items remain in cart for USSD checkout. Goodbye!',
-      invalid: `Invalid selection. ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`,
+      invalid: 'Invalid selection. Press 1 for Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.',
       noInput: 'No input received. Ending call.',
       choicePrompt: 'Press your choice or 5 to checkout.'
     },
     sw: {
-      welcome: `Karibu kwenye Ununuzi wa Sauti! ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name} shilingi ${p.price.toLocaleString()}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
-      options: `${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
-      added: (item) => `Imeongezwa ${item} kwenye kikapu. ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
+      welcome: availableProducts.length > 0
+        ? `Karibu kwenye Ununuzi wa Sauti! ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name} shilingi ${p.price.toLocaleString()}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`
+        : 'Karibu kwenye Ununuzi wa Sauti! Bonyeza 1 kwa Coca Cola shilingi 1500. Bonyeza 2 kwa Mkate shilingi 2000. Bonyeza 3 kwa Maziwa shilingi 3000. Bonyeza 4 kwa Mchele shilingi 8000. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.',
+      options: availableProducts.length > 0
+        ? `${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`
+        : 'Bonyeza 1 kwa Coca Cola. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.',
+      added: (item) => `Imeongezwa ${item} kwenye kikapu. Bonyeza 1 kwa Coca Cola. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
+      moreAdded: (item) => `Imeongezwa ${item} kwenye kikapu. Bonyeza 1 kwa Coca Cola zaidi. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
       emptyCart: 'Kikapu chako ni tupu. Tafadhali ongeza bidhaa kwanza. Kumaliza simu.',
       checkout: (total) => `Kuchakata agizo lako la shilingi ${total}. Utapokea uthibitisho wa malipo hivi karibuni. Asante kwa ununuzi!`,
       goodbye: 'Asante kwa kupiga simu. Bidhaa zako zimebaki kwenye kikapu kwa malipo ya USSD. Kwaheri!',
-      invalid: `Chaguo batili. ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
+      invalid: 'Chaguo batili. Bonyeza 1 kwa Coca Cola. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.',
       noInput: 'Hakuna ingizo. Kumaliza simu.',
       choicePrompt: 'Bonyeza chaguo lako au 5 kulipa.'
     }
@@ -311,7 +343,7 @@ router.post('/shop', async (req, res) => {
   const msg = messages[lang] || messages.en;
 
   if (!digits) {
-    // First time - show shopping menu with real products
+    // First time - show shopping menu
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg.welcome}</Say>
@@ -319,30 +351,100 @@ router.post('/shop', async (req, res) => {
     <Say>${msg.options}</Say>
   </GetDigits>
   <Say>${msg.noInput}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
     return res.send(xml);
   }
 
-  // Handle product selection (1-4 for available products)
-  const productIndex = parseInt(digits) - 1;
-  if (productIndex >= 0 && productIndex < availableProducts.length) {
-    const selectedProduct = availableProducts[productIndex];
-    const addResult = await POSService.addToCart(phoneNumber, selectedProduct.id, 1);
-    
-    const productName = selectedProduct.name;
-    const responseMessage = addResult.success ? msg.added(productName) : addResult.message;
-    
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  // Handle product selection
+  
+  // Use database products if available, otherwise fallback to hardcoded
+  if (availableProducts.length > 0) {
+    const productIndex = parseInt(digits) - 1;
+    if (productIndex >= 0 && productIndex < availableProducts.length) {
+      const selectedProduct = availableProducts[productIndex];
+      const addResult = await POSService.addToCart(phoneNumber, selectedProduct.id, 1);
+      
+      const productName = selectedProduct.name;
+      const responseMessage = addResult.success ? msg.added(productName) : addResult.message;
+      
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${responseMessage}</Say>
   <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
     <Say>${msg.choicePrompt}</Say>
   </GetDigits>
   <Say>${msg.noInput}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
-    return res.send(xml);
+      return res.send(xml);
+    }
+  } else {
+    // Fallback to hardcoded products
+    const productNames = {
+      en: { '001': 'Coca Cola', '002': 'Bread', '003': 'Milk', '004': 'Rice' },
+      sw: { '001': 'Coca Cola', '002': 'Mkate', '003': 'Maziwa', '004': 'Mchele' }
+    };
+
+    if (digits === '1') {
+      // Add Coca Cola
+      POSService.addToCart(phoneNumber, '001', 1);
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>${msg.moreAdded(productNames[lang]['001'])}</Say>
+  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
+    <Say>${msg.choicePrompt}</Say>
+  </GetDigits>
+  <Say>${msg.noInput}</Say>
+  <Reject/>
+</Response>`;
+      return res.send(xml);
+    }
+
+    if (digits === '2') {
+      // Add Bread
+      POSService.addToCart(phoneNumber, '002', 1);
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>${msg.added(productNames[lang]['002'])}</Say>
+  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
+    <Say>${msg.choicePrompt}</Say>
+  </GetDigits>
+  <Say>${msg.noInput}</Say>
+  <Reject/>
+</Response>`;
+      return res.send(xml);
+    }
+
+    if (digits === '3') {
+      // Add Milk
+      POSService.addToCart(phoneNumber, '003', 1);
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>${msg.added(productNames[lang]['003'])}</Say>
+  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
+    <Say>${msg.choicePrompt}</Say>
+  </GetDigits>
+  <Say>${msg.noInput}</Say>
+  <Reject/>
+</Response>`;
+      return res.send(xml);
+    }
+
+    if (digits === '4') {
+      // Add Rice
+      POSService.addToCart(phoneNumber, '004', 1);
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>${msg.added(productNames[lang]['004'])}</Say>
+  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
+    <Say>${msg.choicePrompt}</Say>
+  </GetDigits>
+  <Say>${msg.noInput}</Say>
+  <Reject/>
+</Response>`;
+      return res.send(xml);
+    }
   }
 
   if (digits === '5') {
@@ -352,7 +454,7 @@ router.post('/shop', async (req, res) => {
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg.emptyCart}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
       return res.send(xml);
     }
@@ -360,12 +462,18 @@ router.post('/shop', async (req, res) => {
     // Process checkout
     POSService.processCheckout(phoneNumber).then(result => {
       console.log('[Voice Shop] Checkout result:', result);
+      // Send SMS confirmation for voice checkout
+      if (result.success && result.order) {
+        SMSService.sendOrderConfirmation(phoneNumber, result.order, lang).catch(err => 
+          console.error('[Voice] SMS send error:', err)
+        );
+      }
     });
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>${msg.checkout(cart.total.toLocaleString())}</Say>
-  <Hangup/>
+  <Say>${msg.checkout(cart.total)}</Say>
+  <Reject/>
 </Response>`;
     return res.send(xml);
   }
@@ -374,7 +482,7 @@ router.post('/shop', async (req, res) => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg.goodbye}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
     return res.send(xml);
   }
@@ -387,7 +495,7 @@ router.post('/shop', async (req, res) => {
     <Say>${msg.choicePrompt}</Say>
   </GetDigits>
   <Say>${msg.noInput}</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
   return res.send(xml);
 });
@@ -418,7 +526,7 @@ router.post('/shop-lang', (req, res) => {
     <Say>Press 1 for English. Press 2 for Swahili.</Say>
   </GetDigits>
   <Say>No language selected. Ending call.</Say>
-  <Hangup/>
+  <Reject/>
 </Response>`;
     return res.send(xml);
   }
