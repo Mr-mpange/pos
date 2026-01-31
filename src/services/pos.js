@@ -1,16 +1,5 @@
 const PaymentService = require('./payments');
-
-// Mock product database - replace with real database
-const products = new Map([
-  ['001', { id: '001', name: 'Coca Cola', price: 1500, stock: 50, category: 'drinks' }],
-  ['002', { id: '002', name: 'Bread', price: 2000, stock: 30, category: 'food' }],
-  ['003', { id: '003', name: 'Milk 1L', price: 3000, stock: 20, category: 'dairy' }],
-  ['004', { id: '004', name: 'Rice 2kg', price: 8000, stock: 15, category: 'food' }],
-  ['005', { id: '005', name: 'Cooking Oil', price: 5500, stock: 25, category: 'cooking' }],
-  ['006', { id: '006', name: 'Sugar 1kg', price: 2500, stock: 40, category: 'cooking' }],
-  ['007', { id: '007', name: 'Tea Bags', price: 1800, stock: 35, category: 'drinks' }],
-  ['008', { id: '008', name: 'Soap', price: 1200, stock: 60, category: 'hygiene' }]
-]);
+const SupabaseService = require('./supabase-client');
 
 // Shopping carts for each user
 const userCarts = new Map();
@@ -19,26 +8,48 @@ const orderHistory = new Map();
 class POSService {
   
   // Get all products or by category
-  static getProducts(category = null) {
-    const allProducts = Array.from(products.values());
-    if (category) {
-      return allProducts.filter(p => p.category.toLowerCase() === category.toLowerCase());
+  static async getProducts(category = null) {
+    try {
+      const result = await SupabaseService.getProducts(category);
+      if (!result.success) {
+        console.error('[POS] Error fetching products:', result.error);
+        return [];
+      }
+      return result.data;
+    } catch (error) {
+      console.error('[POS] Error in getProducts:', error);
+      return [];
     }
-    return allProducts;
   }
 
   // Search products by name
-  static searchProducts(query) {
-    const searchTerm = query.toLowerCase();
-    return Array.from(products.values()).filter(p => 
-      p.name.toLowerCase().includes(searchTerm) || 
-      p.category.toLowerCase().includes(searchTerm)
-    );
+  static async searchProducts(query) {
+    try {
+      const result = await SupabaseService.searchProducts(query);
+      if (!result.success) {
+        console.error('[POS] Error searching products:', result.error);
+        return [];
+      }
+      return result.data;
+    } catch (error) {
+      console.error('[POS] Error in searchProducts:', error);
+      return [];
+    }
   }
 
   // Get product by ID
-  static getProduct(productId) {
-    return products.get(productId);
+  static async getProduct(productId) {
+    try {
+      const result = await SupabaseService.getProduct(productId);
+      if (!result.success) {
+        console.error('[POS] Error fetching product:', result.error);
+        return null;
+      }
+      return result.data;
+    } catch (error) {
+      console.error('[POS] Error in getProduct:', error);
+      return null;
+    }
   }
 
   // Get user's cart
@@ -47,46 +58,55 @@ class POSService {
   }
 
   // Add item to cart
-  static addToCart(phoneNumber, productId, quantity = 1) {
-    const product = products.get(productId);
-    if (!product) {
-      return { success: false, message: 'Product not found' };
-    }
-
-    if (product.stock < quantity) {
-      return { success: false, message: `Only ${product.stock} ${product.name} available` };
-    }
-
-    const cart = this.getCart(phoneNumber);
-    const existingItem = cart.items.find(item => item.productId === productId);
-
-    if (existingItem) {
-      const newQuantity = existingItem.quantity + quantity;
-      if (product.stock < newQuantity) {
-        return { success: false, message: `Only ${product.stock} ${product.name} available` };
+  static async addToCart(phoneNumber, productId, quantity = 1) {
+    try {
+      const product = await this.getProduct(productId);
+      if (!product) {
+        return { success: false, message: 'Product not found' };
       }
-      existingItem.quantity = newQuantity;
-      existingItem.subtotal = existingItem.quantity * product.price;
-    } else {
-      cart.items.push({
-        productId,
-        name: product.name,
-        price: product.price,
-        quantity,
-        subtotal: quantity * product.price
-      });
+
+      if (product.stock < quantity) {
+        return { success: false, message: `Only ${product.stock} ${product.unit || 'units'} of ${product.name} available` };
+      }
+
+      const cart = this.getCart(phoneNumber);
+      const existingItem = cart.items.find(item => item.productId === productId);
+
+      if (existingItem) {
+        const newQuantity = existingItem.quantity + quantity;
+        if (product.stock < newQuantity) {
+          return { success: false, message: `Only ${product.stock} ${product.unit || 'units'} of ${product.name} available` };
+        }
+        existingItem.quantity = newQuantity;
+        existingItem.subtotal = existingItem.quantity * product.price;
+      } else {
+        cart.items.push({
+          productId,
+          name: product.name,
+          price: product.price,
+          unit: product.unit || 'unit',
+          quantity,
+          subtotal: quantity * product.price,
+          vendorId: product.vendorId,
+          vendorName: product.vendorName
+        });
+      }
+
+      cart.total = cart.items.reduce((sum, item) => sum + item.subtotal, 0);
+      userCarts.set(phoneNumber, cart);
+      
+      console.log(`[POS] Cart after adding ${product.name}:`, JSON.stringify(cart, null, 2));
+
+      return {
+        success: true,
+        message: `Added ${quantity} ${product.unit || 'unit'}(s) of ${product.name} to cart. Cart total: ${cart.total.toLocaleString()} TZS`,
+        cart
+      };
+
+    } catch (error) {
+      console.error('[POS] Error in addToCart:', error);
+      return { success: false, message: 'Failed to add item to cart' };
     }
-
-    cart.total = cart.items.reduce((sum, item) => sum + item.subtotal, 0);
-    userCarts.set(phoneNumber, cart);
-    
-    console.log(`[POS] Cart after adding ${product.name}:`, JSON.stringify(cart, null, 2));
-
-    return {
-      success: true,
-      message: `Added ${quantity}x ${product.name} to cart. Cart total: ${cart.total} TZS`,
-      cart
-    };
   }
 
   // Remove item from cart
@@ -230,11 +250,12 @@ class POSService {
           return;
         }
 
-        // Update stock
+        // Update stock in database
         for (const item of pendingOrder.items) {
-          const product = products.get(item.productId);
-          product.stock -= item.quantity;
-          products.set(item.productId, product);
+          const stockResult = await SupabaseService.updateProductStock(item.productId, item.quantity);
+          if (!stockResult.success) {
+            console.error(`[POS] Failed to update stock for ${item.name}:`, stockResult.error);
+          }
         }
 
         // Create completed order
@@ -343,10 +364,18 @@ Time: ${new Date().toLocaleString()}`;
   }
 
   // Get categories
-  static getCategories() {
-    const categories = new Set();
-    products.forEach(product => categories.add(product.category));
-    return Array.from(categories);
+  static async getCategories() {
+    try {
+      const result = await SupabaseService.getCategories();
+      if (!result.success) {
+        console.error('[POS] Error fetching categories:', result.error);
+        return [];
+      }
+      return result.data.map(cat => cat.name);
+    } catch (error) {
+      console.error('[POS] Error in getCategories:', error);
+      return [];
+    }
   }
 }
 

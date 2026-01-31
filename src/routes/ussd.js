@@ -1,6 +1,7 @@
 const express = require('express');
 const at = require('../config/at');
 const POSService = require('../services/pos');
+const MarketplaceService = require('../services/marketplace');
 const PaymentService = require('../services/payments');
 
 const router = express.Router();
@@ -52,14 +53,14 @@ function clearSession(sessionId, phoneNumber) {
 
 function buildMainMenu(lang = 'en') {
   const menus = {
-    en: `CON Welcome to POS Store
+    en: `CON Welcome to Soko Connect
 1. Shop Products
 2. View Cart
 3. Wallet
 4. Order History
 5. Call to Shop
 0. Exit`,
-    sw: `CON Karibu POS Store
+    sw: `CON Karibu Soko Connect
 1. Ununua Bidhaa
 2. Angalia Kikapu
 3. Pochi
@@ -135,7 +136,8 @@ function buildProductList(products, page = 1, itemsPerPage = 5, lang = 'en') {
   let menu = `CON ${label.title} (${lang === 'sw' ? 'Ukurasa' : 'Page'} ${page}):\n`;
   pageProducts.forEach((product, index) => {
     const menuIndex = startIndex + index + 1;
-    menu += `${menuIndex}. ${product.name} - ${product.price} TZS\n`;
+    const priceFormatted = product.price.toLocaleString();
+    menu += `${menuIndex}. ${product.name} - ${priceFormatted} TZS/${product.unit}\n`;
   });
   
   if (endIndex < products.length) {
@@ -183,9 +185,10 @@ function buildCartView(cart, lang = 'en') {
   
   let menu = `CON ${label.cartTitle}\n`;
   cart.items.forEach((item, index) => {
-    menu += `${index + 1}. ${item.quantity}x ${item.name} - ${item.subtotal} TZS\n`;
+    const subtotalFormatted = item.subtotal.toLocaleString();
+    menu += `${index + 1}. ${item.quantity} ${item.unit}(s) ${item.name} - ${subtotalFormatted} TZS\n`;
   });
-  menu += `\n${label.total} ${cart.total} TZS\n`;
+  menu += `\n${label.total} ${cart.total.toLocaleString()} TZS\n`;
   menu += `${cart.items.length + 1}. ${label.checkout}\n`;
   menu += `${cart.items.length + 2}. ${label.clearCart}\n`;
   menu += `0. ${label.backMain}`;
@@ -208,6 +211,14 @@ router.post('/', async (req, res) => {
     const session = getSession(sessionId, phoneNumber);
     const textArray = text ? text.split('*') : [];
     const lastInput = textArray.length > 0 ? textArray[textArray.length - 1] : '';
+    
+    console.log('[USSD Debug]', { 
+      textArray, 
+      lastInput, 
+      sessionMenu: session.menu, 
+      sessionData: Object.keys(session.data || {}),
+      textLength: textArray.length 
+    });
     
     let response = '';
     
@@ -234,21 +245,19 @@ router.post('/', async (req, res) => {
     }
     
     // Main menu - after language selection
-    
-    // Level 1: Main menu selections (text = "1", "2", "3", "4", "5", "0")
     else if (textArray.length === 1 && session.menu === MENUS.MAIN) {
       const lang = session.language || 'en';
       const messages = {
         en: {
           noOrders: 'No previous orders found.',
           recentOrders: 'Recent Orders:',
-          goodbye: 'Thank you for using POS Store!',
+          goodbye: 'Thank you for using Soko Connect!',
           invalid: 'Invalid selection. Please try again.'
         },
         sw: {
           noOrders: 'Hakuna maagizo ya awali.',
           recentOrders: 'Maagizo ya Hivi Karibuni:',
-          goodbye: 'Asante kwa kutumia POS Store!',
+          goodbye: 'Asante kwa kutumia Soko Connect!',
           invalid: 'Chaguo batili. Jaribu tena.'
         }
       };
@@ -261,7 +270,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '2': // View Cart
-          const cart = POSService.getCart(phoneNumber);
+          const cart = MarketplaceService.getCart(phoneNumber);
           response = buildCartView(cart, lang);
           session.menu = MENUS.CART;
           break;
@@ -272,13 +281,14 @@ router.post('/', async (req, res) => {
           break;
           
         case '4': // Order History
-          const orders = POSService.getOrderHistory(phoneNumber, 3);
+          const orders = MarketplaceService.getOrderHistory(phoneNumber, 3);
           if (orders.length === 0) {
             response = `END ${msg.noOrders}`;
           } else {
             response = `END ${msg.recentOrders}\n`;
             orders.forEach(order => {
-              response += `${order.id}: ${order.total} TZS (${order.items.length} ${lang === 'sw' ? 'bidhaa' : 'items'})\n`;
+              const totalFormatted = order.total.toLocaleString();
+              response += `${order.orderNumber || order.id}: ${totalFormatted} TZS (${order.items.length} ${lang === 'sw' ? 'bidhaa' : 'items'})\n`;
             });
           }
           clearSession(sessionId, phoneNumber);
@@ -301,12 +311,13 @@ router.post('/', async (req, res) => {
       }
     }
     
-    // Level 2: Shop menu selections (text = "1*1", "1*2", "1*3", "1*4")
+    // Level 2: Shop menu selections
     else if (textArray.length === 2 && textArray[0] === '1') {
+      const lang = session.language || 'en';
       switch (lastInput) {
         case '1': // Browse All Products
-          const products = POSService.getProducts();
-          response = buildProductList(products);
+          const products = await MarketplaceService.getProducts();
+          response = buildProductList(products, 1, 5, lang);
           session.menu = MENUS.PRODUCT_LIST;
           session.data.products = products;
           session.data.page = 1;
@@ -318,7 +329,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '3': // View Categories
-          const categories = POSService.getCategories();
+          const categories = await MarketplaceService.getCategories();
           response = `CON Categories:\n`;
           categories.forEach((cat, index) => {
             response += `${index + 1}. ${cat.charAt(0).toUpperCase() + cat.slice(1)}\n`;
@@ -329,7 +340,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '4': // Back to Main Menu
-          response = buildMainMenu();
+          response = buildMainMenu(lang);
           session.menu = MENUS.MAIN;
           break;
           
@@ -339,12 +350,13 @@ router.post('/', async (req, res) => {
       }
     }
     
-    // Level 2: Wallet menu selections (text = "3*1", "3*2", "3*3", "3*4")
+    // Level 2: Wallet menu selections
     else if (textArray.length === 2 && textArray[0] === '3') {
+      const lang = session.language || 'en';
       switch (lastInput) {
         case '1': // Check Balance
           const balance = PaymentService.getBalance(phoneNumber);
-          response = `END Your balance: ${balance.balance} ${balance.currency}`;
+          response = `END Your balance: ${balance.balance.toLocaleString()} ${balance.currency}`;
           clearSession(sessionId, phoneNumber);
           break;
           
@@ -363,7 +375,7 @@ router.post('/', async (req, res) => {
             transactions.forEach(tx => {
               const type = tx.from === phoneNumber ? 'Sent' : 'Received';
               const other = tx.from === phoneNumber ? tx.to : tx.from;
-              response += `${type} ${tx.amount} TZS ${type === 'Sent' ? 'to' : 'from'} ${other}\n`;
+              response += `${type} ${tx.amount.toLocaleString()} TZS ${type === 'Sent' ? 'to' : 'from'} ${other}\n`;
             });
           }
           clearSession(sessionId, phoneNumber);
@@ -375,7 +387,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '0': // Back to Main Menu
-          response = buildMainMenu();
+          response = buildMainMenu(lang);
           session.menu = MENUS.MAIN;
           break;
           
@@ -385,16 +397,17 @@ router.post('/', async (req, res) => {
       }
     }
     
-    // Level 2: Cart menu selections (text = "2*1", "2*2", etc.)
+    // Level 2: Cart menu selections
     else if (textArray.length === 2 && textArray[0] === '2') {
-      const cart = POSService.getCart(phoneNumber);
+      const lang = session.language || 'en';
+      const cart = MarketplaceService.getCart(phoneNumber);
       const selection = parseInt(lastInput);
       
       // Handle empty cart - "Go Shopping" option
       if (cart.items.length === 0 && selection === 1) {
         // Go directly to product list
-        const products = POSService.getProducts();
-        response = buildProductList(products);
+        const products = await MarketplaceService.getProducts();
+        response = buildProductList(products, 1, 5, lang);
         session.menu = MENUS.PRODUCT_LIST;
         session.data.products = products;
         session.data.page = 1;
@@ -405,260 +418,31 @@ router.post('/', async (req, res) => {
       }
       else if (selection === cart.items.length + 1) {
         // Checkout
-        const checkoutResult = await POSService.processCheckout(phoneNumber);
+        const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
         response = `END ${checkoutResult.message}`;
         clearSession(sessionId, phoneNumber);
       }
       else if (selection === cart.items.length + 2) {
         // Clear cart
-        POSService.clearCart(phoneNumber);
+        MarketplaceService.clearCart(phoneNumber);
         response = `END Cart cleared successfully.`;
         clearSession(sessionId, phoneNumber);
       }
       else if (selection === 0) {
         // Back to main menu
-        response = buildMainMenu();
+        response = buildMainMenu(lang);
         session.menu = MENUS.MAIN;
       }
       else {
         response = `END Invalid selection.`;
         clearSession(sessionId, phoneNumber);
-      }
-    }
-    
-    // Level 2: Cart menu selections (text = "2*1", "2*0", etc.)
-    else if (textArray.length === 2 && textArray[0] === '2') {
-      const cart = POSService.getCart(phoneNumber);
-      const selection = parseInt(lastInput);
-      
-      // Handle empty cart - "Go Shopping" option
-      if (cart.items.length === 0 && selection === 1) {
-        // Go directly to product list
-        const products = POSService.getProducts();
-        response = buildProductList(products);
-        session.menu = MENUS.PRODUCT_LIST;
-        session.data.products = products;
-        session.data.page = 1;
-      }
-      else if (selection === 0) {
-        // Back to main menu
-        response = buildMainMenu();
-        session.menu = MENUS.MAIN;
-      }
-      else {
-        response = `END Invalid selection.`;
-        clearSession(sessionId, phoneNumber);
-      }
-    }
-    
-    // Level 3: Product list selections (text = "1*1*1", "1*1*2", etc.)
-    else if (textArray.length === 3 && textArray[0] === '1' && textArray[1] === '1') {
-      const products = session.data.products || POSService.getProducts();
-      const page = session.data.page || 1;
-      const itemsPerPage = 5;
-      const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
-      
-      const selection = parseInt(lastInput);
-      
-      if (selection >= 1 && selection <= maxItems) {
-        // Add product to cart
-        const productIndex = (page - 1) * itemsPerPage + selection - 1;
-        const product = products[productIndex];
-        const result = POSService.addToCart(phoneNumber, product.id, 1);
-        
-        // Continue session - show options after adding to cart
-        response = `CON ${result.message}
-
-1. Continue Shopping
-2. View Cart
-3. Checkout
-0. Main Menu`;
-        session.menu = 'after_add_to_cart';
-      }
-      else if (selection === itemsPerPage + 1 && (page * itemsPerPage) < products.length) {
-        // Next page
-        session.data.page = page + 1;
-        response = buildProductList(products, page + 1);
-      }
-      else if (selection === itemsPerPage + 2 && page > 1) {
-        // Previous page
-        session.data.page = page - 1;
-        response = buildProductList(products, page - 1);
-      }
-      else if (selection === 0) {
-        // Back to shop menu
-        response = buildShopMenu();
-        session.menu = MENUS.SHOP;
-      }
-      else {
-        response = `END Invalid selection.`;
-        clearSession(sessionId, phoneNumber);
-      }
-    }
-    
-    // Level 4: After add to cart selections (text = "1*1*3*1", "1*1*3*2", etc.)
-    else if (textArray.length === 4 && textArray[0] === '1' && textArray[1] === '1') {
-      switch (lastInput) {
-        case '1': // Continue Shopping
-          const products = POSService.getProducts();
-          response = buildProductList(products);
-          session.menu = MENUS.PRODUCT_LIST;
-          session.data.products = products;
-          session.data.page = 1;
-          break;
-          
-        case '2': // View Cart
-          const cart = POSService.getCart(phoneNumber);
-          response = buildCartView(cart);
-          session.menu = MENUS.CART;
-          break;
-          
-        case '3': // Checkout
-          const checkoutResult = await POSService.processCheckout(phoneNumber);
-          response = `END ${checkoutResult.message}`;
-          clearSession(sessionId, phoneNumber);
-          break;
-          
-        case '0': // Main Menu
-          response = buildMainMenu();
-          session.menu = MENUS.MAIN;
-          break;
-          
-        default:
-          response = `END Invalid selection.`;
-          clearSession(sessionId, phoneNumber);
-      }
-    }
-    
-    // Level 5: Continue shopping after add to cart (text = "1*1*3*1*2", etc.)
-    else if (textArray.length === 5 && textArray[0] === '1' && textArray[1] === '1' && textArray[2] === '3' && textArray[3] === '1') {
-      // This is continuing shopping after adding to cart
-      const products = session.data.products || POSService.getProducts();
-      const page = session.data.page || 1;
-      const itemsPerPage = 5;
-      const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
-      
-      const selection = parseInt(lastInput);
-      
-      if (selection >= 1 && selection <= maxItems) {
-        // Add another product to cart
-        const productIndex = (page - 1) * itemsPerPage + selection - 1;
-        const product = products[productIndex];
-        const result = POSService.addToCart(phoneNumber, product.id, 1);
-        
-        // Continue session - show options after adding to cart
-        response = `CON ${result.message}
-
-1. Continue Shopping
-2. View Cart
-3. Checkout
-0. Main Menu`;
-        session.menu = 'after_add_to_cart';
-      }
-      else if (selection === itemsPerPage + 1 && (page * itemsPerPage) < products.length) {
-        // Next page
-        session.data.page = page + 1;
-        response = buildProductList(products, page + 1);
-      }
-      else if (selection === itemsPerPage + 2 && page > 1) {
-        // Previous page
-        session.data.page = page - 1;
-        response = buildProductList(products, page - 1);
-      }
-      else if (selection === 0) {
-        // Back to shop menu
-        response = buildShopMenu();
-        session.menu = MENUS.SHOP;
-      }
-      else {
-        response = `END Invalid selection.`;
-        clearSession(sessionId, phoneNumber);
-      }
-    }
-    
-    // Level 6: Continue shopping after multiple adds (text = "1*1*3*1*2*2", etc.)
-    else if (textArray.length === 6 && textArray[0] === '1' && textArray[1] === '1' && textArray[2] === '3' && textArray[3] === '1' && textArray[4] === '2') {
-      // This is continuing shopping after adding multiple products
-      const products = session.data.products || POSService.getProducts();
-      const page = session.data.page || 1;
-      const itemsPerPage = 5;
-      const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
-      
-      const selection = parseInt(lastInput);
-      
-      if (selection >= 1 && selection <= maxItems) {
-        // Add another product to cart
-        const productIndex = (page - 1) * itemsPerPage + selection - 1;
-        const product = products[productIndex];
-        const result = POSService.addToCart(phoneNumber, product.id, 1);
-        
-        // Continue session - show options after adding to cart
-        response = `CON ${result.message}
-
-1. Continue Shopping
-2. View Cart
-3. Checkout
-0. Main Menu`;
-        session.menu = 'after_add_to_cart';
-      }
-      else if (selection === itemsPerPage + 1 && (page * itemsPerPage) < products.length) {
-        // Next page
-        session.data.page = page + 1;
-        response = buildProductList(products, page + 1);
-      }
-      else if (selection === itemsPerPage + 2 && page > 1) {
-        // Previous page
-        session.data.page = page - 1;
-        response = buildProductList(products, page - 1);
-      }
-      else if (selection === 0) {
-        // Back to shop menu
-        response = buildShopMenu();
-        session.menu = MENUS.SHOP;
-      }
-      else {
-        response = `END Invalid selection.`;
-        clearSession(sessionId, phoneNumber);
-      }
-    }
-    
-    // Handle after adding to cart menu (session-based fallback for any level)
-    else if (session.menu === 'after_add_to_cart') {
-      switch (lastInput) {
-        case '1': // Continue Shopping
-          const products = POSService.getProducts();
-          response = buildProductList(products);
-          session.menu = MENUS.PRODUCT_LIST;
-          session.data.products = products;
-          session.data.page = 1;
-          break;
-          
-        case '2': // View Cart
-          const cart = POSService.getCart(phoneNumber);
-          response = buildCartView(cart);
-          session.menu = MENUS.CART;
-          break;
-          
-        case '3': // Checkout
-          const checkoutResult = await POSService.processCheckout(phoneNumber);
-          response = `END ${checkoutResult.message}`;
-          clearSession(sessionId, phoneNumber);
-          break;
-          
-        case '0': // Main Menu
-          response = buildMainMenu();
-          session.menu = MENUS.MAIN;
-          break;
-          
-        default:
-          response = `END Invalid selection.`;
-          clearSession(sessionId, phoneNumber);
       }
     }
     
     // Handle product selection when in PRODUCT_LIST menu (session-based fallback)
     else if (session.menu === MENUS.PRODUCT_LIST) {
-      const products = session.data.products || POSService.getProducts();
+      const lang = session.language || 'en';
+      const products = session.data.products || await MarketplaceService.getProducts();
       const page = session.data.page || 1;
       const itemsPerPage = 5;
       const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
@@ -669,7 +453,7 @@ router.post('/', async (req, res) => {
         // Add product to cart
         const productIndex = (page - 1) * itemsPerPage + selection - 1;
         const product = products[productIndex];
-        const result = POSService.addToCart(phoneNumber, product.id, 1);
+        const result = await MarketplaceService.addToCart(phoneNumber, product.id, 1);
         
         // Continue session - show options after adding to cart
         response = `CON ${result.message}
@@ -683,16 +467,16 @@ router.post('/', async (req, res) => {
       else if (selection === itemsPerPage + 1 && (page * itemsPerPage) < products.length) {
         // Next page
         session.data.page = page + 1;
-        response = buildProductList(products, page + 1);
+        response = buildProductList(products, page + 1, itemsPerPage, lang);
       }
       else if (selection === itemsPerPage + 2 && page > 1) {
         // Previous page
         session.data.page = page - 1;
-        response = buildProductList(products, page - 1);
+        response = buildProductList(products, page - 1, itemsPerPage, lang);
       }
       else if (selection === 0) {
         // Back to shop menu
-        response = buildShopMenu();
+        response = buildShopMenu(lang);
         session.menu = MENUS.SHOP;
       }
       else {
@@ -703,29 +487,96 @@ router.post('/', async (req, res) => {
     
     // Handle cart menu (session-based fallback for any level)
     else if (session.menu === MENUS.CART) {
-      const cart = POSService.getCart(phoneNumber);
+      const lang = session.language || 'en';
+      const cart = MarketplaceService.getCart(phoneNumber);
       const selection = parseInt(lastInput);
       
-      if (selection >= 1 && selection <= cart.items.length) {
-        response = `END Item removal not implemented in USSD. Use SMS: "clear"`;
-        clearSession(sessionId, phoneNumber);
+      if (cart.items.length === 0) {
+        // Empty cart handling
+        if (selection === 1) {
+          // Go Shopping
+          const products = await MarketplaceService.getProducts();
+          response = buildProductList(products, 1, 5, lang);
+          session.menu = MENUS.PRODUCT_LIST;
+          session.data.products = products;
+          session.data.page = 1;
+        } else if (selection === 0) {
+          // Back to main menu
+          response = buildMainMenu(lang);
+          session.menu = MENUS.MAIN;
+        } else {
+          response = `END Invalid selection.`;
+          clearSession(sessionId, phoneNumber);
+        }
+      } else {
+        // Cart with items
+        if (selection >= 1 && selection <= cart.items.length) {
+          response = `END Item removal not implemented in USSD. Use SMS: "clear"`;
+          clearSession(sessionId, phoneNumber);
+        }
+        else if (selection === cart.items.length + 1) {
+          // Checkout
+          const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
+          response = `END ${checkoutResult.message}`;
+          clearSession(sessionId, phoneNumber);
+        }
+        else if (selection === cart.items.length + 2) {
+          // Clear cart
+          MarketplaceService.clearCart(phoneNumber);
+          response = `END Cart cleared successfully.`;
+          clearSession(sessionId, phoneNumber);
+        }
+        else if (selection === 0) {
+          // Back to main menu
+          response = buildMainMenu(lang);
+          session.menu = MENUS.MAIN;
+        }
+        else {
+          response = `END Invalid selection.`;
+          clearSession(sessionId, phoneNumber);
+        }
       }
-      else if (selection === cart.items.length + 1) {
-        // Checkout
-        const checkoutResult = await POSService.processCheckout(phoneNumber);
-        response = `END ${checkoutResult.message}`;
-        clearSession(sessionId, phoneNumber);
+    }
+    
+    // Level 3: Product list selections (path-based handling)
+    else if (textArray.length === 3 && textArray[0] === '1' && textArray[1] === '1') {
+      const lang = session.language || 'en';
+      const products = session.data.products || await MarketplaceService.getProducts();
+      const page = session.data.page || 1;
+      const itemsPerPage = 5;
+      const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
+      
+      const selection = parseInt(lastInput);
+      
+      if (selection >= 1 && selection <= maxItems) {
+        // Add product to cart
+        const productIndex = (page - 1) * itemsPerPage + selection - 1;
+        const product = products[productIndex];
+        const result = await MarketplaceService.addToCart(phoneNumber, product.id, 1);
+        
+        // Continue session - show options after adding to cart
+        response = `CON ${result.message}
+
+1. Continue Shopping
+2. View Cart
+3. Checkout
+0. Main Menu`;
+        session.menu = 'after_add_to_cart';
       }
-      else if (selection === cart.items.length + 2) {
-        // Clear cart
-        POSService.clearCart(phoneNumber);
-        response = `END Cart cleared successfully.`;
-        clearSession(sessionId, phoneNumber);
+      else if (selection === itemsPerPage + 1 && (page * itemsPerPage) < products.length) {
+        // Next page
+        session.data.page = page + 1;
+        response = buildProductList(products, page + 1, itemsPerPage, lang);
+      }
+      else if (selection === itemsPerPage + 2 && page > 1) {
+        // Previous page
+        session.data.page = page - 1;
+        response = buildProductList(products, page - 1, itemsPerPage, lang);
       }
       else if (selection === 0) {
-        // Back to main menu
-        response = buildMainMenu();
-        session.menu = MENUS.MAIN;
+        // Back to shop menu
+        response = buildShopMenu(lang);
+        session.menu = MENUS.SHOP;
       }
       else {
         response = `END Invalid selection.`;
@@ -733,7 +584,42 @@ router.post('/', async (req, res) => {
       }
     }
     
-    // Handle special flows (send money, add money)
+    // Level 4+: Continue shopping after adding to cart (any depth)
+    else if (textArray.length >= 4 && session.menu === 'after_add_to_cart') {
+      const lang = session.language || 'en';
+      switch (lastInput) {
+        case '1': // Continue Shopping
+          const products = await MarketplaceService.getProducts();
+          response = buildProductList(products, 1, 5, lang);
+          session.menu = MENUS.PRODUCT_LIST;
+          session.data.products = products;
+          session.data.page = 1;
+          break;
+          
+        case '2': // View Cart
+          const cart = MarketplaceService.getCart(phoneNumber);
+          response = buildCartView(cart, lang);
+          session.menu = MENUS.CART;
+          break;
+          
+        case '3': // Checkout
+          const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
+          response = `END ${checkoutResult.message}`;
+          clearSession(sessionId, phoneNumber);
+          break;
+          
+        case '0': // Main Menu
+          response = buildMainMenu(lang);
+          session.menu = MENUS.MAIN;
+          break;
+          
+        default:
+          response = `END Invalid selection.`;
+          clearSession(sessionId, phoneNumber);
+      }
+    }
+    
+    // Handle special flows (send money, add money, search)
     else if (session.menu === 'send_money_number') {
       session.data.recipient = lastInput;
       response = `CON Enter amount to send:`;
@@ -757,9 +643,24 @@ router.post('/', async (req, res) => {
         response = `END Invalid amount. Minimum is 100 TZS.`;
       } else {
         const newBalance = PaymentService.addMoney(phoneNumber, amount);
-        response = `END Added ${amount} TZS. New balance: ${newBalance.balance} TZS`;
+        response = `END Added ${amount.toLocaleString()} TZS. New balance: ${newBalance.balance.toLocaleString()} TZS`;
       }
       clearSession(sessionId, phoneNumber);
+    }
+    else if (session.menu === 'search_input') {
+      const searchQuery = lastInput;
+      const products = await MarketplaceService.searchProducts(searchQuery);
+      
+      if (products.length === 0) {
+        response = `END No products found for "${searchQuery}". Try different keywords.`;
+        clearSession(sessionId, phoneNumber);
+      } else {
+        const lang = session.language || 'en';
+        response = buildProductList(products, 1, 5, lang);
+        session.menu = MENUS.PRODUCT_LIST;
+        session.data.products = products;
+        session.data.page = 1;
+      }
     }
     
     // Default fallback

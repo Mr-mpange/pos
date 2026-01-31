@@ -1,7 +1,7 @@
 {
-  "name": "africastalking-sandbox-suite",
+  "name": "soko-connect-pos",
   "version": "1.0.0",
-  "description": "Africa's Talking sandbox demo: 1-way SMS, 2-way SMS, Bulk SMS, USSD, Voice, Airtime",
+  "description": "Soko Connect - Digital Marketplace Platform with USSD/SMS integration for African markets",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
@@ -12,14 +12,18 @@
     "africastalking",
     "sms",
     "ussd",
-    "voice",
-    "airtime",
-    "sandbox"
+    "marketplace",
+    "soko-connect",
+    "vendors",
+    "mobile-money",
+    "tanzania",
+    "agriculture"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@google/generative-ai": "^0.17.0",
+    "@supabase/supabase-js": "^2.93.3",
     "africastalking": "^0.7.4",
     "axios": "^1.7.7",
     "cors": "^2.8.5",

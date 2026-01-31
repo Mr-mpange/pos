@@ -1,11 +1,14 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const PaymentService = require('./payments');
-const POSService = require('./pos');
+const MarketplaceService = require('./marketplace');
 
 const API_KEY = process.env.GEMINI_API_KEY;
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest';
 let genAI;
 let model;
+
+// Simple conversation memory (in production, use Redis or database)
+const conversationMemory = new Map();
 
 function getModel() {
   if (!API_KEY) {
@@ -13,7 +16,14 @@ function getModel() {
   }
   if (!genAI) {
     genAI = new GoogleGenerativeAI(API_KEY);
-    model = genAI.getGenerativeModel({ model: MODEL_NAME });
+    model = genAI.getGenerativeModel({ 
+      model: MODEL_NAME,
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.8,
+        maxOutputTokens: 200,
+      }
+    });
     console.log(`[AI] Initialized Gemini model: ${MODEL_NAME}`);
   }
   return model;
@@ -24,6 +34,53 @@ function sanitizeReply(text, maxLen = 480) {
   // SMS-friendly trimming
   const clean = String(text).replace(/\s+/g, ' ').trim();
   return clean.length > maxLen ? clean.slice(0, maxLen - 3) + '...' : clean;
+}
+
+function updateConversationMemory(phoneNumber, userText, botResponse) {
+  if (!conversationMemory.has(phoneNumber)) {
+    conversationMemory.set(phoneNumber, []);
+  }
+  const history = conversationMemory.get(phoneNumber);
+  history.push({ user: userText, bot: botResponse, timestamp: Date.now() });
+  
+  // Keep only last 5 exchanges to avoid memory bloat
+  if (history.length > 5) {
+    history.shift();
+  }
+}
+
+function getConversationContext(phoneNumber) {
+  const history = conversationMemory.get(phoneNumber) || [];
+  if (history.length === 0) return '';
+  
+  let context = 'Recent conversation:\n';
+  history.slice(-3).forEach(exchange => {
+    context += `Customer: ${exchange.user}\nYou: ${exchange.bot}\n`;
+  });
+  return context;
+}
+
+// Add some personality variations
+function getGreetingVariation() {
+  const greetings = [
+    'Hey there!',
+    'Hi!',
+    'Hello!',
+    'Hey!',
+    'Hi there!'
+  ];
+  return greetings[Math.floor(Math.random() * greetings.length)];
+}
+
+function getPositiveResponse() {
+  const responses = [
+    'Great!',
+    'Perfect!',
+    'Awesome!',
+    'Nice!',
+    'Excellent!'
+  ];
+  return responses[Math.floor(Math.random() * responses.length)];
 }
 
 // Parse POS commands from user text
@@ -110,87 +167,120 @@ function parsePaymentCommand(text) {
 }
 
 // Find product by name or ID
-function findProduct(query) {
+async function findProduct(query) {
   // Try to find by ID first
-  const product = POSService.getProduct(query);
+  const product = await MarketplaceService.getProduct(query);
   if (product) return product;
   
   // Search by name
-  const results = POSService.searchProducts(query);
+  const results = await MarketplaceService.searchProducts(query);
   return results.length > 0 ? results[0] : null;
 }
 
 async function generateReply(userText, phoneNumber) {
   try {
+    const model = getModel();
+    
     // First check if it's a POS command
     const posCommand = parsePOSCommand(userText);
     
     if (posCommand) {
       console.log(`[AI] POS command detected:`, posCommand);
       
+      let baseResponse = '';
+      
       switch (posCommand.type) {
         case 'browse':
-          const products = POSService.getProducts().slice(0, 5); // Show first 5
-          let productList = 'Available Products:\n';
-          products.forEach(p => {
-            productList += `${p.id}: ${p.name} - ${p.price} TZS\n`;
+          const products = await MarketplaceService.getProducts();
+          const topProducts = products.slice(0, 5);
+          baseResponse = `Here's what we have in stock today:\n`;
+          topProducts.forEach(p => {
+            baseResponse += `${p.name} - ${p.price.toLocaleString()} TZS/${p.unit} (${p.vendorName})\n`;
           });
-          productList += '\nSay "add [ID]" to add to cart or "search [name]" to find items';
-          return sanitizeReply(productList);
+          baseResponse += '\nJust tell me what you want to add to your cart!';
+          break;
           
         case 'search':
-          const searchResults = POSService.searchProducts(posCommand.query);
+          const searchResults = await MarketplaceService.searchProducts(posCommand.query);
           if (searchResults.length === 0) {
-            return `No products found for "${posCommand.query}". Try "shop" to see all products.`;
+            baseResponse = `Sorry, I couldn't find "${posCommand.query}" in our marketplace. Would you like to see what else we have?`;
+          } else {
+            baseResponse = `Great! I found these for you:\n`;
+            searchResults.slice(0, 3).forEach(p => {
+              baseResponse += `${p.name} - ${p.price.toLocaleString()} TZS/${p.unit} (${p.stock} available, ${p.vendorName})\n`;
+            });
+            baseResponse += '\nWhich one would you like to add?';
           }
-          let searchList = `Found ${searchResults.length} products:\n`;
-          searchResults.slice(0, 3).forEach(p => {
-            searchList += `${p.id}: ${p.name} - ${p.price} TZS (${p.stock} left)\n`;
-          });
-          searchList += '\nSay "add [ID]" to add to cart';
-          return sanitizeReply(searchList);
+          break;
           
         case 'add':
-          const product = findProduct(posCommand.productQuery);
+          const product = await findProduct(posCommand.productQuery);
           if (!product) {
-            return `Product "${posCommand.productQuery}" not found. Say "shop" to see available products.`;
+            baseResponse = `I couldn't find "${posCommand.productQuery}" in our marketplace. Let me show you what's available instead.`;
+          } else {
+            const addResult = await MarketplaceService.addToCart(phoneNumber, product.id, posCommand.quantity);
+            baseResponse = addResult.message;
           }
-          const addResult = POSService.addToCart(phoneNumber, product.id, posCommand.quantity);
-          return addResult.message;
+          break;
           
         case 'cart':
-          const cart = POSService.getCart(phoneNumber);
+          const cart = MarketplaceService.getCart(phoneNumber);
           if (cart.items.length === 0) {
-            return 'Your cart is empty. Say "shop" to browse products.';
+            baseResponse = 'Your cart is empty right now. Would you like to browse our marketplace?';
+          } else {
+            baseResponse = 'Here\'s what you have so far:\n';
+            cart.items.forEach(item => {
+              baseResponse += `${item.quantity} ${item.unit}(s) ${item.name} - ${item.subtotal.toLocaleString()} TZS\n`;
+            });
+            baseResponse += `\nTotal: ${cart.total.toLocaleString()} TZS\nReady to checkout?`;
           }
-          let cartText = 'Your Cart:\n';
-          cart.items.forEach(item => {
-            cartText += `${item.quantity}x ${item.name} - ${item.subtotal} TZS\n`;
-          });
-          cartText += `\nTotal: ${cart.total} TZS\nSay "checkout" to complete purchase`;
-          return sanitizeReply(cartText);
+          break;
           
         case 'checkout':
-          const checkoutResult = await POSService.processCheckout(phoneNumber);
-          return checkoutResult.message;
+          const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
+          baseResponse = checkoutResult.message;
+          break;
           
         case 'clear':
-          POSService.clearCart(phoneNumber);
-          return 'Cart cleared successfully.';
+          MarketplaceService.clearCart(phoneNumber);
+          baseResponse = 'All cleared! Your cart is now empty.';
+          break;
           
         case 'orders':
-          const orders = POSService.getOrderHistory(phoneNumber, 3);
+          const orders = MarketplaceService.getOrderHistory(phoneNumber, 3);
           if (orders.length === 0) {
-            return 'No previous orders found.';
+            baseResponse = 'You haven\'t made any orders with us yet. Ready to start shopping?';
+          } else {
+            baseResponse = 'Here are your recent orders:\n';
+            orders.forEach(order => {
+              const totalFormatted = order.total.toLocaleString();
+              baseResponse += `Order ${order.orderNumber || order.id}: ${totalFormatted} TZS (${order.items.length} items)\n`;
+            });
           }
-          let orderText = 'Recent Orders:\n';
-          orders.forEach(order => {
-            orderText += `${order.id}: ${order.total} TZS (${order.items.length} items)\n`;
-          });
-          return sanitizeReply(orderText);
+          break;
           
         default:
-          return 'POS command not recognized. Try: shop, cart, checkout, balance';
+          baseResponse = 'I\'m not sure what you\'re looking for. Try asking me to show products, check your cart, or see your balance.';
+      }
+      
+      // Make the response more human using AI
+      const humanizePrompt = `You are Maya, a friendly store assistant. Make this response more conversational and warm while keeping all the important information. Keep it under 160 characters:
+
+"${baseResponse}"
+
+Make it sound like you're texting a friend who's shopping at your store. Be helpful and enthusiastic.`;
+      
+      try {
+        const result = await model.generateContent(humanizePrompt);
+        const humanResponse = result.response.text();
+        const finalResponse = sanitizeReply(humanResponse);
+        updateConversationMemory(phoneNumber, userText, finalResponse);
+        return finalResponse;
+      } catch (aiErr) {
+        console.warn('[AI] Humanization failed, using base response:', aiErr.message);
+        const finalResponse = sanitizeReply(baseResponse);
+        updateConversationMemory(phoneNumber, userText, finalResponse);
+        return finalResponse;
       }
     }
     
@@ -200,10 +290,13 @@ async function generateReply(userText, phoneNumber) {
     if (paymentCommand) {
       console.log(`[AI] Payment command detected:`, paymentCommand);
       
+      let baseResponse = '';
+      
       switch (paymentCommand.type) {
         case 'balance':
           const balance = PaymentService.getBalance(phoneNumber);
-          return `Your balance: ${balance.balance} ${balance.currency}`;
+          baseResponse = `Your current balance is ${balance.balance} ${balance.currency}`;
+          break;
           
         case 'send':
           const result = await PaymentService.processPayment(
@@ -212,40 +305,90 @@ async function generateReply(userText, phoneNumber) {
             paymentCommand.amount,
             paymentCommand.description
           );
-          return result.message;
+          baseResponse = result.message;
+          break;
           
         case 'history':
           const transactions = PaymentService.getTransactions(phoneNumber, 3);
           if (transactions.length === 0) {
-            return 'No recent transactions found.';
+            baseResponse = 'You haven\'t made any transactions yet.';
+          } else {
+            baseResponse = 'Your recent transactions:\n';
+            transactions.forEach(tx => {
+              const type = tx.from === phoneNumber ? 'Sent' : 'Received';
+              const other = tx.from === phoneNumber ? tx.to : tx.from;
+              baseResponse += `${type} ${tx.amount} TZS ${type === 'Sent' ? 'to' : 'from'} ${other}\n`;
+            });
           }
-          let historyText = 'Recent transactions:\n';
-          transactions.forEach(tx => {
-            const type = tx.from === phoneNumber ? 'Sent' : 'Received';
-            const other = tx.from === phoneNumber ? tx.to : tx.from;
-            historyText += `${type} ${tx.amount} TZS ${type === 'Sent' ? 'to' : 'from'} ${other}\n`;
-          });
-          return sanitizeReply(historyText);
+          break;
           
         case 'add':
           const newBalance = PaymentService.addMoney(phoneNumber, paymentCommand.amount);
-          return `Added ${paymentCommand.amount} TZS. New balance: ${newBalance.balance} TZS`;
+          baseResponse = `Successfully added ${paymentCommand.amount} TZS. Your new balance is ${newBalance.balance} TZS`;
+          break;
           
         default:
-          return 'Payment command not recognized. Try: balance, send 1000 to +255123456789, history';
+          baseResponse = 'I can help you check your balance, send money, or view transaction history. What would you like to do?';
+      }
+      
+      // Make payment responses more human
+      const humanizePrompt = `You are Maya, a helpful customer service rep. Make this payment response more friendly and reassuring while keeping all the important information:
+
+"${baseResponse}"
+
+Sound like you're personally helping them with their money. Be warm and trustworthy. Keep under 160 characters.`;
+      
+      try {
+        const result = await model.generateContent(humanizePrompt);
+        const humanResponse = result.response.text();
+        const finalResponse = sanitizeReply(humanResponse);
+        updateConversationMemory(phoneNumber, userText, finalResponse);
+        return finalResponse;
+      } catch (aiErr) {
+        console.warn('[AI] Payment humanization failed, using base response:', aiErr.message);
+        const finalResponse = sanitizeReply(baseResponse);
+        updateConversationMemory(phoneNumber, userText, finalResponse);
+        return finalResponse;
       }
     }
     
-    // If not a POS or payment command, return help message
-    return `Welcome to POS Store! Available commands:
-SHOP: shop, search [item], add [item], cart, checkout, clear, orders
-WALLET: balance, send [amount] to [number], history, add [amount]
+    // For general conversation, use AI to understand intent and respond naturally
+    const conversationContext = getConversationContext(phoneNumber);
+    const conversationPrompt = `You are Maya, a friendly SMS assistant for Soko Connect marketplace and mobile wallet service. ${conversationContext ? conversationContext + '\n' : ''}A customer just texted: "${userText}"
 
-Example: "shop" to browse products`;
+Respond naturally and helpfully like you're texting a friend. You can:
+- Help them shop from local vendors (browse products, search items, add to cart, checkout)
+- Manage their wallet (check balance, send money, view history)
+- Have casual conversation while guiding them to services
+
+Keep your response under 160 characters and sound like a real person texting back. Be warm, helpful, and conversational. Use emojis sparingly if appropriate.
+
+Available services:
+- Shopping: "shop" to browse marketplace, "search [item]" to find products from vendors
+- Wallet: "balance" to check money, "send [amount] to [number]" for transfers
+- Cart: "cart" to view, "checkout" to buy from vendors`;
+
+    try {
+      const result = await model.generateContent(conversationPrompt);
+      const response = result.response.text();
+      const finalResponse = sanitizeReply(response);
+      
+      // Update conversation memory
+      updateConversationMemory(phoneNumber, userText, finalResponse);
+      
+      return finalResponse;
+    } catch (aiErr) {
+      console.warn('[AI] Conversation AI failed:', aiErr.message);
+      const fallbackResponse = 'Hi! I can help you shop or manage your wallet. Try "shop" to browse products or "balance" to check your money.';
+      updateConversationMemory(phoneNumber, userText, fallbackResponse);
+      return sanitizeReply(fallbackResponse);
+    }
     
   } catch (err) {
     console.warn('[AI] generateReply failed:', err.message);
-    return 'POS Store temporarily unavailable. Try: shop, balance, cart';
+    const fallbackResponse = 'Hey! Something went wrong on my end. I\'m here to help with shopping and payments though. What can I do for you?';
+    updateConversationMemory(phoneNumber, userText, fallbackResponse);
+    return fallbackResponse;
   }
 }
 
