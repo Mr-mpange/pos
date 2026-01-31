@@ -244,7 +244,7 @@ router.get('/lang', (req, res) => {
 });
 
 // Voice shopping actions with language support
-router.post('/shop', (req, res) => {
+router.post('/shop', async (req, res) => {
   console.log('[Voice Shop]', req.body);
   res.set('Content-Type', 'application/xml');
   
@@ -262,29 +262,47 @@ router.post('/shop', (req, res) => {
   const baseUrl = `https://${host}`;
   const shopUrl = `${baseUrl}${req.baseUrl}/shop?lang=${lang}`;
 
+  // Get real products from database
+  const POSService = require('../services/pos');
+  const products = await POSService.getProducts();
+  
+  // Use first 4 products from database (or fallback to empty array)
+  const availableProducts = products.slice(0, 4);
+  
+  if (availableProducts.length === 0) {
+    const noProductsMsg = lang === 'sw' 
+      ? 'Hakuna bidhaa zinazopatikana kwa sasa. Jaribu tena baadaye.'
+      : 'No products available at the moment. Please try again later.';
+    
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>${noProductsMsg}</Say>
+  <Hangup/>
+</Response>`;
+    return res.send(xml);
+  }
+
   // Language-specific messages
   const messages = {
     en: {
-      welcome: 'Welcome to Voice Shopping! Press 1 for Coca Cola 1500 shillings. Press 2 for Bread 2000 shillings. Press 3 for Milk 3000 shillings. Press 4 for Rice 8000 shillings. Press 5 to checkout. Press 0 to end call.',
-      options: 'Press 1 for Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.',
-      added: (item) => `Added ${item} to cart. Press 1 for Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.`,
-      moreAdded: (item) => `Added ${item} to cart. Press 1 for more Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.`,
+      welcome: `Welcome to Voice Shopping! ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name} ${p.price.toLocaleString()} shillings`).join('. ')}. Press 5 to checkout. Press 0 to end call.`,
+      options: `${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`,
+      added: (item) => `Added ${item} to cart. ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`,
       emptyCart: 'Your cart is empty. Please add items first. Ending call.',
       checkout: (total) => `Processing your order of ${total} shillings. You will receive payment confirmation shortly. Thank you for shopping with us!`,
       goodbye: 'Thank you for calling. Your items remain in cart for USSD checkout. Goodbye!',
-      invalid: 'Invalid selection. Press 1 for Coca Cola. Press 2 for Bread. Press 3 for Milk. Press 4 for Rice. Press 5 to checkout. Press 0 to end.',
+      invalid: `Invalid selection. ${availableProducts.map((p, i) => `Press ${i+1} for ${p.name}`).join('. ')}. Press 5 to checkout. Press 0 to end.`,
       noInput: 'No input received. Ending call.',
       choicePrompt: 'Press your choice or 5 to checkout.'
     },
     sw: {
-      welcome: 'Karibu kwenye Ununuzi wa Sauti! Bonyeza 1 kwa Coca Cola shilingi 1500. Bonyeza 2 kwa Mkate shilingi 2000. Bonyeza 3 kwa Maziwa shilingi 3000. Bonyeza 4 kwa Mchele shilingi 8000. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.',
-      options: 'Bonyeza 1 kwa Coca Cola. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.',
-      added: (item) => `Imeongezwa ${item} kwenye kikapu. Bonyeza 1 kwa Coca Cola. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
-      moreAdded: (item) => `Imeongezwa ${item} kwenye kikapu. Bonyeza 1 kwa Coca Cola zaidi. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
+      welcome: `Karibu kwenye Ununuzi wa Sauti! ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name} shilingi ${p.price.toLocaleString()}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
+      options: `${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
+      added: (item) => `Imeongezwa ${item} kwenye kikapu. ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
       emptyCart: 'Kikapu chako ni tupu. Tafadhali ongeza bidhaa kwanza. Kumaliza simu.',
       checkout: (total) => `Kuchakata agizo lako la shilingi ${total}. Utapokea uthibitisho wa malipo hivi karibuni. Asante kwa ununuzi!`,
       goodbye: 'Asante kwa kupiga simu. Bidhaa zako zimebaki kwenye kikapu kwa malipo ya USSD. Kwaheri!',
-      invalid: 'Chaguo batili. Bonyeza 1 kwa Coca Cola. Bonyeza 2 kwa Mkate. Bonyeza 3 kwa Maziwa. Bonyeza 4 kwa Mchele. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.',
+      invalid: `Chaguo batili. ${availableProducts.map((p, i) => `Bonyeza ${i+1} kwa ${p.name}`).join('. ')}. Bonyeza 5 kulipa. Bonyeza 0 kumaliza.`,
       noInput: 'Hakuna ingizo. Kumaliza simu.',
       choicePrompt: 'Bonyeza chaguo lako au 5 kulipa.'
     }
@@ -293,7 +311,7 @@ router.post('/shop', (req, res) => {
   const msg = messages[lang] || messages.en;
 
   if (!digits) {
-    // First time - show shopping menu
+    // First time - show shopping menu with real products
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>${msg.welcome}</Say>
@@ -306,64 +324,18 @@ router.post('/shop', (req, res) => {
     return res.send(xml);
   }
 
-  // Handle product selection
-  const POSService = require('../services/pos');
-  const productNames = {
-    en: { '001': 'Coca Cola', '002': 'Bread', '003': 'Milk', '004': 'Rice' },
-    sw: { '001': 'Coca Cola', '002': 'Mkate', '003': 'Maziwa', '004': 'Mchele' }
-  };
-
-  if (digits === '1') {
-    // Add Coca Cola
-    POSService.addToCart(phoneNumber, '001', 1);
+  // Handle product selection (1-4 for available products)
+  const productIndex = parseInt(digits) - 1;
+  if (productIndex >= 0 && productIndex < availableProducts.length) {
+    const selectedProduct = availableProducts[productIndex];
+    const addResult = await POSService.addToCart(phoneNumber, selectedProduct.id, 1);
+    
+    const productName = selectedProduct.name;
+    const responseMessage = addResult.success ? msg.added(productName) : addResult.message;
+    
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>${msg.moreAdded(productNames[lang]['001'])}</Say>
-  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
-    <Say>${msg.choicePrompt}</Say>
-  </GetDigits>
-  <Say>${msg.noInput}</Say>
-  <Hangup/>
-</Response>`;
-    return res.send(xml);
-  }
-
-  if (digits === '2') {
-    // Add Bread
-    POSService.addToCart(phoneNumber, '002', 1);
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>${msg.added(productNames[lang]['002'])}</Say>
-  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
-    <Say>${msg.choicePrompt}</Say>
-  </GetDigits>
-  <Say>${msg.noInput}</Say>
-  <Hangup/>
-</Response>`;
-    return res.send(xml);
-  }
-
-  if (digits === '3') {
-    // Add Milk
-    POSService.addToCart(phoneNumber, '003', 1);
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>${msg.added(productNames[lang]['003'])}</Say>
-  <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
-    <Say>${msg.choicePrompt}</Say>
-  </GetDigits>
-  <Say>${msg.noInput}</Say>
-  <Hangup/>
-</Response>`;
-    return res.send(xml);
-  }
-
-  if (digits === '4') {
-    // Add Rice
-    POSService.addToCart(phoneNumber, '004', 1);
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>${msg.added(productNames[lang]['004'])}</Say>
+  <Say>${responseMessage}</Say>
   <GetDigits timeout="30" numDigits="1" callbackUrl="${shopUrl}">
     <Say>${msg.choicePrompt}</Say>
   </GetDigits>
@@ -392,7 +364,7 @@ router.post('/shop', (req, res) => {
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>${msg.checkout(cart.total)}</Say>
+  <Say>${msg.checkout(cart.total.toLocaleString())}</Say>
   <Hangup/>
 </Response>`;
     return res.send(xml);

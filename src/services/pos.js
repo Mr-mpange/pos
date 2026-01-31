@@ -109,17 +109,97 @@ class POSService {
     }
   }
 
-  // Remove item from cart
+  // Remove item from cart by product ID
   static removeFromCart(phoneNumber, productId) {
     const cart = this.getCart(phoneNumber);
+    const itemToRemove = cart.items.find(item => item.productId === productId);
+    
+    if (!itemToRemove) {
+      return {
+        success: false,
+        message: 'Item not found in cart'
+      };
+    }
+
     cart.items = cart.items.filter(item => item.productId !== productId);
     cart.total = cart.items.reduce((sum, item) => sum + item.subtotal, 0);
     userCarts.set(phoneNumber, cart);
 
     return {
       success: true,
-      message: 'Item removed from cart',
-      cart
+      message: `Removed ${itemToRemove.name} from cart. Cart total: ${cart.total.toLocaleString()} TZS`,
+      cart,
+      removedItem: itemToRemove
+    };
+  }
+
+  // Remove item from cart by index (1-based)
+  static removeFromCartByIndex(phoneNumber, itemIndex) {
+    const cart = this.getCart(phoneNumber);
+    
+    if (cart.items.length === 0) {
+      return {
+        success: false,
+        message: 'Your cart is empty'
+      };
+    }
+
+    const index = itemIndex - 1; // Convert to 0-based index
+    if (index < 0 || index >= cart.items.length) {
+      return {
+        success: false,
+        message: `Invalid item number. Please choose between 1 and ${cart.items.length}`
+      };
+    }
+
+    const removedItem = cart.items[index];
+    cart.items.splice(index, 1);
+    cart.total = cart.items.reduce((sum, item) => sum + item.subtotal, 0);
+    userCarts.set(phoneNumber, cart);
+
+    return {
+      success: true,
+      message: `Removed ${removedItem.name} from cart. Cart total: ${cart.total.toLocaleString()} TZS`,
+      cart,
+      removedItem
+    };
+  }
+
+  // Get formatted cart with item numbers for easy removal
+  static getFormattedCart(phoneNumber) {
+    const cart = this.getCart(phoneNumber);
+    
+    if (cart.items.length === 0) {
+      return {
+        success: true,
+        message: 'Your cart is empty',
+        cart,
+        formattedItems: []
+      };
+    }
+
+    let formattedMessage = 'Your cart:\n';
+    const formattedItems = [];
+    
+    cart.items.forEach((item, index) => {
+      const itemNumber = index + 1;
+      const itemText = `${itemNumber}. ${item.quantity} ${item.unit}(s) ${item.name} - ${item.subtotal.toLocaleString()} TZS`;
+      formattedMessage += itemText + '\n';
+      formattedItems.push({
+        number: itemNumber,
+        ...item,
+        displayText: itemText
+      });
+    });
+    
+    formattedMessage += `\nTotal: ${cart.total.toLocaleString()} TZS`;
+    formattedMessage += '\nTo remove an item, type "remove [number]" (e.g., "remove 1")';
+
+    return {
+      success: true,
+      message: formattedMessage,
+      cart,
+      formattedItems
     };
   }
 
@@ -214,7 +294,7 @@ class POSService {
     }
   }
 
-  // Simulate PUSH payment initiation
+// Simulate PUSH payment initiation
   static async initiatePushPayment(phoneNumber, amount, orderId) {
     try {
       const requestId = `PUSH${Date.now()}${Math.random().toString(36).substr(2, 4)}`;
@@ -255,35 +335,118 @@ class POSService {
     }
   }
 
-  // Live payment integration (to be implemented with real payment gateway)
+  // Live payment integration with ZenoPay
   static async initiateLivePayment(phoneNumber, amount, orderId, requestId) {
     try {
-      console.log(`[POS] LIVE PAYMENT: Initiating real payment for ${amount} TZS to ${phoneNumber}`);
+      console.log(`[POS] LIVE PAYMENT: Initiating ZenoPay payment for ${amount} TZS to ${phoneNumber}`);
       
-      // TODO: Integrate with real mobile money API
-      const liveGatewayUrl = process.env.LIVE_PAYMENT_GATEWAY_URL;
-      const liveApiKey = process.env.LIVE_PAYMENT_API_KEY;
+      const ZenoPayService = require('./zenopay');
+      const zenoPayService = new ZenoPayService();
       
-      if (!liveGatewayUrl || !liveApiKey) {
-        console.error('[POS] LIVE PAYMENT: Missing gateway configuration');
+      // Format phone number for Tanzania
+      const formattedPhone = zenoPayService.formatPhoneNumber(phoneNumber);
+      
+      // Create payment order with ZenoPay
+      const paymentResult = await zenoPayService.createPaymentOrder(
+        amount,
+        formattedPhone,
+        'POS Customer',
+        'customer@sokoconnect.com',
+        `POS Order ${orderId}`
+      );
+      
+      if (!paymentResult.success) {
+        console.error('[POS] ZenoPay payment creation failed:', paymentResult.message);
         return {
           success: false,
-          message: 'Payment gateway not configured. Please contact support.'
+          message: `Payment failed: ${paymentResult.message}`
         };
       }
       
-      // For now, return error since live payment is not implemented
+      // Store ZenoPay order ID for tracking
+      if (!this.zenoPayOrders) {
+        this.zenoPayOrders = new Map();
+      }
+      this.zenoPayOrders.set(orderId, {
+        zenoPayOrderId: paymentResult.orderId,
+        requestId,
+        phoneNumber: formattedPhone,
+        amount,
+        status: 'pending',
+        createdAt: new Date()
+      });
+      
+      // Start polling for payment status
+      this.pollZenoPayStatus(orderId, paymentResult.orderId);
+      
+      // Detect mobile money provider for user guidance
+      const provider = zenoPayService.detectProvider(formattedPhone);
+      const ussdGuidance = provider 
+        ? `Dial ${provider.ussdCode} on your ${provider.name} line to complete payment.`
+        : 'Check your phone for USSD prompt to complete payment.';
+      
+      console.log(`[POS] ZenoPay payment initiated: ${paymentResult.orderId}`);
+      
       return {
-        success: false,
-        message: 'Live payments not yet implemented. Please use sandbox mode for testing.'
+        success: true,
+        requestId,
+        zenoPayOrderId: paymentResult.orderId,
+        ussdCode: paymentResult.ussdCode,
+        message: `Payment request sent to ${formattedPhone}. ${ussdGuidance}`
       };
       
     } catch (error) {
-      console.error('[POS] Live payment error:', error);
+      console.error('[POS] ZenoPay payment error:', error);
       return {
         success: false,
-        message: 'Live payment service temporarily unavailable'
+        message: 'Payment service temporarily unavailable. Please try again.'
       };
+    }
+  }
+
+  // Poll ZenoPay payment status
+  static async pollZenoPayStatus(orderId, zenoPayOrderId, attempts = 0) {
+    const maxAttempts = 60; // Poll for 5 minutes (5 second intervals)
+    
+    if (attempts >= maxAttempts) {
+      console.log(`[POS] ZenoPay polling timeout for order ${orderId}`);
+      await this.confirmPayment(orderId, null, false);
+      return;
+    }
+    
+    try {
+      const ZenoPayService = require('./zenopay');
+      const zenoPayService = new ZenoPayService();
+      
+      const statusResult = await zenoPayService.checkPaymentStatus(zenoPayOrderId);
+      
+      if (statusResult.success) {
+        const status = statusResult.status.toLowerCase();
+        
+        if (status === 'completed' || status === 'success') {
+          console.log(`[POS] ZenoPay payment completed for order ${orderId}`);
+          await this.confirmPayment(orderId, zenoPayOrderId, true);
+          return;
+        } else if (status === 'failed' || status === 'cancelled' || status === 'expired') {
+          console.log(`[POS] ZenoPay payment failed for order ${orderId}: ${status}`);
+          await this.confirmPayment(orderId, zenoPayOrderId, false);
+          return;
+        }
+        // Status is still pending, continue polling
+      }
+      
+      // Continue polling after 5 seconds
+      setTimeout(() => {
+        this.pollZenoPayStatus(orderId, zenoPayOrderId, attempts + 1);
+      }, 5000);
+      
+    } catch (error) {
+      console.error(`[POS] ZenoPay status check error for order ${orderId}:`, error);
+      
+      // Continue polling on error (network issues, etc.)
+      setTimeout(() => {
+        this.pollZenoPayStatus(orderId, zenoPayOrderId, attempts + 1);
+      }, 5000);
     }
   }
 
@@ -341,6 +504,17 @@ class POSService {
         this.pendingOrders.delete(orderId);
 
         console.log(`[POS] Payment confirmed for order ${orderId}`);
+
+        // Update user session to completed state
+        const AIService = require('./ai');
+        if (AIService.updateUserSession) {
+          AIService.updateUserSession(phoneNumber, { 
+            state: 'completed',
+            hasViewedCart: false,
+            cartItemsAdded: 0,
+            checkoutAttempts: 0
+          });
+        }
 
         // Send SMS confirmation to both buyer and merchant
         const buyerSMS = `Payment Confirmed!

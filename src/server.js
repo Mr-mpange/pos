@@ -26,6 +26,7 @@ app.use('/ussd', require('./routes/ussd'));
 app.use('/voice', require('./routes/voice'));
 app.use('/airtime', require('./routes/airtime'));
 app.use('/whatsapp', require('./routes/whatsapp'));
+app.use('/zenopay', require('./routes/zenopay-webhook'));
 
 // 404
 app.use((req, res) => {

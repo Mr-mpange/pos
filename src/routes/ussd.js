@@ -1,7 +1,6 @@
 const express = require('express');
 const at = require('../config/at');
 const POSService = require('../services/pos');
-const MarketplaceService = require('../services/marketplace');
 const PaymentService = require('../services/payments');
 
 const router = express.Router();
@@ -135,16 +134,20 @@ function buildProductList(products, page = 1, itemsPerPage = 5, lang = 'en') {
   
   let menu = `CON ${label.title} (${lang === 'sw' ? 'Ukurasa' : 'Page'} ${page}):\n`;
   pageProducts.forEach((product, index) => {
-    const menuIndex = startIndex + index + 1;
+    const menuIndex = index + 1; // Simple 1-based indexing for current page
     const priceFormatted = product.price.toLocaleString();
     menu += `${menuIndex}. ${product.name} - ${priceFormatted} TZS/${product.unit}\n`;
   });
   
+  // Add navigation options after products
+  let nextOptionIndex = pageProducts.length + 1;
+  
   if (endIndex < products.length) {
-    menu += `${itemsPerPage + 1}. ${label.nextPage}\n`;
+    menu += `${nextOptionIndex}. ${label.nextPage}\n`;
+    nextOptionIndex++;
   }
   if (page > 1) {
-    menu += `${itemsPerPage + 2}. ${label.prevPage}\n`;
+    menu += `${nextOptionIndex}. ${label.prevPage}\n`;
   }
   menu += `0. ${label.back}`;
   
@@ -241,11 +244,97 @@ router.post('/', async (req, res) => {
           response = `END Invalid selection. Please try again.`;
           clearSession(sessionId, phoneNumber);
         }
+      } else if (textArray.length >= 2 && session.menu === 'language_selection') {
+        // Handle multi-level input when still in language selection
+        // First process the language selection
+        const langChoice = textArray[0];
+        if (langChoice === '1') {
+          session.language = 'en';
+          session.menu = MENUS.MAIN;
+        } else if (langChoice === '2') {
+          session.language = 'sw';
+          session.menu = MENUS.MAIN;
+        } else {
+          response = `END Invalid language selection. Please try again.`;
+          clearSession(sessionId, phoneNumber);
+          return res.set('Content-Type', 'text/plain').send(response);
+        }
+        
+        // Now process the main menu selection
+        const mainMenuChoice = lastInput;
+        const lang = session.language;
+        const messages = {
+          en: {
+            noOrders: 'No previous orders found.',
+            recentOrders: 'Recent Orders:',
+            goodbye: 'Thank you for using Soko Connect!',
+            invalid: 'Invalid selection. Please try again.'
+          },
+          sw: {
+            noOrders: 'Hakuna maagizo ya awali.',
+            recentOrders: 'Maagizo ya Hivi Karibuni:',
+            goodbye: 'Asante kwa kutumia Soko Connect!',
+            invalid: 'Chaguo batili. Jaribu tena.'
+          }
+        };
+        const msg = messages[lang] || messages.en;
+        
+        switch (mainMenuChoice) {
+          case '1': // Shop Products
+            response = buildShopMenu(lang);
+            session.menu = MENUS.SHOP;
+            break;
+            
+          case '2': // View Cart
+            const cart = POSService.getCart(phoneNumber);
+            response = buildCartView(cart, lang);
+            session.menu = MENUS.CART;
+            break;
+            
+          case '3': // Wallet
+            response = buildWalletMenu(lang);
+            session.menu = MENUS.WALLET;
+            break;
+            
+          case '4': // Order History
+            const orders = POSService.getOrderHistory(phoneNumber, 3);
+            if (orders.length === 0) {
+              response = `END ${msg.noOrders}`;
+            } else {
+              response = `END ${msg.recentOrders}\n`;
+              orders.forEach(order => {
+                const totalFormatted = order.total.toLocaleString();
+                response += `${order.orderNumber || order.id}: ${totalFormatted} TZS (${order.items.length} ${lang === 'sw' ? 'bidhaa' : 'items'})\n`;
+              });
+            }
+            clearSession(sessionId, phoneNumber);
+            break;
+            
+          case '5': // Call to Shop
+            console.log('[USSD] Initiating voice call for shopping');
+            const voiceResult = await initiateVoiceCall(phoneNumber);
+            const voiceMessage = lang === 'sw' ? 
+              `Simu ya ununuzi imeanzishwa! Utapokea simu hivi karibuni. Chagua lugha yako kisha fuata maelekezo ya sauti kununua.` :
+              `Voice shopping call initiated! You will receive a call shortly. Choose your language then follow voice prompts to shop.`;
+            response = `END ${voiceMessage}`;
+            clearSession(sessionId, phoneNumber);
+            break;
+            
+          case '0': // Exit
+            response = `END ${msg.goodbye}`;
+            clearSession(sessionId, phoneNumber);
+            break;
+            
+          default:
+            console.log(`[USSD] Invalid main menu selection: ${mainMenuChoice}`);
+            response = `END ${msg.invalid}`;
+            clearSession(sessionId, phoneNumber);
+        }
       }
     }
     
     // Main menu - after language selection
-    else if (textArray.length === 1 && session.menu === MENUS.MAIN) {
+    else if (session.menu === MENUS.MAIN) {
       const lang = session.language || 'en';
       const messages = {
         en: {
@@ -270,7 +359,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '2': // View Cart
-          const cart = MarketplaceService.getCart(phoneNumber);
+          const cart = POSService.getCart(phoneNumber);
           response = buildCartView(cart, lang);
           session.menu = MENUS.CART;
           break;
@@ -281,7 +370,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '4': // Order History
-          const orders = MarketplaceService.getOrderHistory(phoneNumber, 3);
+          const orders = POSService.getOrderHistory(phoneNumber, 3);
           if (orders.length === 0) {
             response = `END ${msg.noOrders}`;
           } else {
@@ -295,8 +384,12 @@ router.post('/', async (req, res) => {
           break;
           
         case '5': // Call to Shop
+          console.log('[USSD] Initiating voice call for shopping');
           const voiceResult = await initiateVoiceCall(phoneNumber);
-          response = `END ${voiceResult.message}`;
+          const voiceMessage = lang === 'sw' ? 
+            `Simu ya ununuzi imeanzishwa! Utapokea simu hivi karibuni. Chagua lugha yako kisha fuata maelekezo ya sauti kununua.` :
+            `Voice shopping call initiated! You will receive a call shortly. Choose your language then follow voice prompts to shop.`;
+          response = `END ${voiceMessage}`;
           clearSession(sessionId, phoneNumber);
           break;
           
@@ -306,6 +399,7 @@ router.post('/', async (req, res) => {
           break;
           
         default:
+          console.log(`[USSD] Invalid main menu selection: ${lastInput}`);
           response = `END ${msg.invalid}`;
           clearSession(sessionId, phoneNumber);
       }
@@ -316,7 +410,7 @@ router.post('/', async (req, res) => {
       const lang = session.language || 'en';
       switch (lastInput) {
         case '1': // Browse All Products
-          const products = await MarketplaceService.getProducts();
+          const products = await POSService.getProducts();
           response = buildProductList(products, 1, 5, lang);
           session.menu = MENUS.PRODUCT_LIST;
           session.data.products = products;
@@ -329,7 +423,7 @@ router.post('/', async (req, res) => {
           break;
           
         case '3': // View Categories
-          const categories = await MarketplaceService.getCategories();
+          const categories = await POSService.getCategories();
           response = `CON Categories:\n`;
           categories.forEach((cat, index) => {
             response += `${index + 1}. ${cat.charAt(0).toUpperCase() + cat.slice(1)}\n`;
@@ -400,13 +494,13 @@ router.post('/', async (req, res) => {
     // Level 2: Cart menu selections
     else if (textArray.length === 2 && textArray[0] === '2') {
       const lang = session.language || 'en';
-      const cart = MarketplaceService.getCart(phoneNumber);
+      const cart = POSService.getCart(phoneNumber);
       const selection = parseInt(lastInput);
       
       // Handle empty cart - "Go Shopping" option
       if (cart.items.length === 0 && selection === 1) {
         // Go directly to product list
-        const products = await MarketplaceService.getProducts();
+        const products = await POSService.getProducts();
         response = buildProductList(products, 1, 5, lang);
         session.menu = MENUS.PRODUCT_LIST;
         session.data.products = products;
@@ -418,13 +512,13 @@ router.post('/', async (req, res) => {
       }
       else if (selection === cart.items.length + 1) {
         // Checkout
-        const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
+        const checkoutResult = await POSService.processCheckout(phoneNumber);
         response = `END ${checkoutResult.message}`;
         clearSession(sessionId, phoneNumber);
       }
       else if (selection === cart.items.length + 2) {
         // Clear cart
-        const clearResult = MarketplaceService.clearCart(phoneNumber);
+        const clearResult = POSService.clearCart(phoneNumber);
         response = `END ${clearResult.message}`;
         clearSession(sessionId, phoneNumber);
       }
@@ -442,18 +536,20 @@ router.post('/', async (req, res) => {
     // Handle product selection when in PRODUCT_LIST menu (session-based fallback)
     else if (session.menu === MENUS.PRODUCT_LIST) {
       const lang = session.language || 'en';
-      const products = session.data.products || await MarketplaceService.getProducts();
+      const products = session.data.products || await POSService.getProducts();
       const page = session.data.page || 1;
       const itemsPerPage = 5;
-      const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
+      const startIndex = (page - 1) * itemsPerPage;
+      const pageProducts = products.slice(startIndex, startIndex + itemsPerPage);
+      const maxItems = pageProducts.length;
       
       const selection = parseInt(lastInput);
       
       if (selection >= 1 && selection <= maxItems) {
         // Add product to cart
-        const productIndex = (page - 1) * itemsPerPage + selection - 1;
+        const productIndex = startIndex + selection - 1; // Convert to global product index
         const product = products[productIndex];
-        const result = await MarketplaceService.addToCart(phoneNumber, product.id, 1);
+        const result = await POSService.addToCart(phoneNumber, product.id, 1);
         
         // Continue session - show options after adding to cart
         response = `CON ${result.message}
@@ -464,13 +560,18 @@ router.post('/', async (req, res) => {
 0. Main Menu`;
         session.menu = 'after_add_to_cart';
       }
-      else if (selection === itemsPerPage + 1 && (page * itemsPerPage) < products.length) {
+      else if (selection === maxItems + 1 && (startIndex + itemsPerPage) < products.length) {
         // Next page
         session.data.page = page + 1;
         response = buildProductList(products, page + 1, itemsPerPage, lang);
       }
-      else if (selection === itemsPerPage + 2 && page > 1) {
-        // Previous page
+      else if (selection === maxItems + 2 && page > 1) {
+        // Previous page (only if next page option exists)
+        session.data.page = page - 1;
+        response = buildProductList(products, page - 1, itemsPerPage, lang);
+      }
+      else if (selection === maxItems + 1 && page > 1 && (startIndex + itemsPerPage) >= products.length) {
+        // Previous page (when no next page option)
         session.data.page = page - 1;
         response = buildProductList(products, page - 1, itemsPerPage, lang);
       }
@@ -480,7 +581,7 @@ router.post('/', async (req, res) => {
         session.menu = MENUS.SHOP;
       }
       else {
-        response = `END Invalid selection.`;
+        response = `END Invalid selection. Please try again.`;
         clearSession(sessionId, phoneNumber);
       }
     }
@@ -488,14 +589,14 @@ router.post('/', async (req, res) => {
     // Handle cart menu (session-based fallback for any level)
     else if (session.menu === MENUS.CART) {
       const lang = session.language || 'en';
-      const cart = MarketplaceService.getCart(phoneNumber);
+      const cart = POSService.getCart(phoneNumber);
       const selection = parseInt(lastInput);
       
       if (cart.items.length === 0) {
         // Empty cart handling
         if (selection === 1) {
           // Go Shopping
-          const products = await MarketplaceService.getProducts();
+          const products = await POSService.getProducts();
           response = buildProductList(products, 1, 5, lang);
           session.menu = MENUS.PRODUCT_LIST;
           session.data.products = products;
@@ -516,13 +617,13 @@ router.post('/', async (req, res) => {
         }
         else if (selection === cart.items.length + 1) {
           // Checkout
-          const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
+          const checkoutResult = await POSService.processCheckout(phoneNumber);
           response = `END ${checkoutResult.message}`;
           clearSession(sessionId, phoneNumber);
         }
         else if (selection === cart.items.length + 2) {
           // Clear cart
-          const clearResult = MarketplaceService.clearCart(phoneNumber);
+          const clearResult = POSService.clearCart(phoneNumber);
           response = `END ${clearResult.message}`;
           clearSession(sessionId, phoneNumber);
         }
@@ -541,7 +642,7 @@ router.post('/', async (req, res) => {
     // Level 3: Product list selections (path-based handling)
     else if (textArray.length === 3 && textArray[0] === '1' && textArray[1] === '1') {
       const lang = session.language || 'en';
-      const products = session.data.products || await MarketplaceService.getProducts();
+      const products = session.data.products || await POSService.getProducts();
       const page = session.data.page || 1;
       const itemsPerPage = 5;
       const maxItems = Math.min(itemsPerPage, products.length - (page - 1) * itemsPerPage);
@@ -552,7 +653,7 @@ router.post('/', async (req, res) => {
         // Add product to cart
         const productIndex = (page - 1) * itemsPerPage + selection - 1;
         const product = products[productIndex];
-        const result = await MarketplaceService.addToCart(phoneNumber, product.id, 1);
+        const result = await POSService.addToCart(phoneNumber, product.id, 1);
         
         // Continue session - show options after adding to cart
         response = `CON ${result.message}
@@ -589,7 +690,7 @@ router.post('/', async (req, res) => {
       const lang = session.language || 'en';
       switch (lastInput) {
         case '1': // Continue Shopping
-          const products = await MarketplaceService.getProducts();
+          const products = await POSService.getProducts();
           response = buildProductList(products, 1, 5, lang);
           session.menu = MENUS.PRODUCT_LIST;
           session.data.products = products;
@@ -597,13 +698,13 @@ router.post('/', async (req, res) => {
           break;
           
         case '2': // View Cart
-          const cart = MarketplaceService.getCart(phoneNumber);
+          const cart = POSService.getCart(phoneNumber);
           response = buildCartView(cart, lang);
           session.menu = MENUS.CART;
           break;
           
         case '3': // Checkout
-          const checkoutResult = await MarketplaceService.processCheckout(phoneNumber);
+          const checkoutResult = await POSService.processCheckout(phoneNumber);
           response = `END ${checkoutResult.message}`;
           clearSession(sessionId, phoneNumber);
           break;
@@ -649,7 +750,7 @@ router.post('/', async (req, res) => {
     }
     else if (session.menu === 'search_input') {
       const searchQuery = lastInput;
-      const products = await MarketplaceService.searchProducts(searchQuery);
+      const products = await POSService.searchProducts(searchQuery);
       
       if (products.length === 0) {
         response = `END No products found for "${searchQuery}". Try different keywords.`;
@@ -684,6 +785,19 @@ router.post('/', async (req, res) => {
 // Initiate voice call for shopping
 async function initiateVoiceCall(phoneNumber) {
   try {
+    console.log(`[USSD] Starting voice call initiation for ${phoneNumber}`);
+    
+    // Check if we're in sandbox mode
+    const isSandbox = (process.env.AT_USERNAME || 'sandbox') === 'sandbox';
+    
+    if (isSandbox) {
+      console.log('[USSD] Voice calls not available in sandbox mode');
+      return {
+        success: false,
+        message: 'Voice shopping not available in demo mode. Please use USSD shopping instead.'
+      };
+    }
+    
     const at = require('../config/at');
     const voice = at.VOICE;
     
@@ -692,30 +806,57 @@ async function initiateVoiceCall(phoneNumber) {
     const callbackUrl = `https://${host}/voice/shop-lang`;
     
     const options = {
-      to: phoneNumber,
-      from: process.env.AT_VOICE_PHONE_NUMBER || '+254711000000', // Your voice number
+      callTo: phoneNumber,
+      callFrom: process.env.AT_VOICE_PHONE_NUMBER || '+254711082306',
       callbackUrl: callbackUrl
     };
     
-    console.log(`[USSD] Initiating voice shopping call to ${phoneNumber}`);
-    console.log(`[USSD] Voice callback URL: ${callbackUrl}`);
+    console.log(`[USSD] Voice call options:`, options);
     
     // Make the voice call
     const response = await voice.call(options);
     
-    console.log('[USSD] Voice call response:', response);
+    console.log('[USSD] Voice call API response:', response);
     
-    return {
-      success: true,
-      message: `Voice shopping call initiated to ${phoneNumber}. You will receive a call shortly. Choose your language then follow voice prompts to shop.`
-    };
+    // Check if the call was successful
+    if (response && (response.status === 'Queued' || response.sessionId)) {
+      return {
+        success: true,
+        message: `Voice shopping call initiated! You will receive a call shortly. Choose your language then follow voice prompts to shop.`
+      };
+    } else {
+      console.warn('[USSD] Voice call may have failed:', response);
+      return {
+        success: true,
+        message: `Voice shopping call requested for ${phoneNumber}. You should receive a call shortly.`
+      };
+    }
     
   } catch (error) {
     console.error('[USSD] Voice call error:', error);
-    return {
-      success: false,
-      message: 'Voice call service temporarily unavailable. Please use USSD shopping instead.'
-    };
+    
+    // Provide helpful error message based on error type
+    if (error.response && error.response.status === 401) {
+      return {
+        success: false,
+        message: 'Voice service not available. Please contact support to enable voice calls or use USSD shopping instead.'
+      };
+    } else if (error.message && error.message.includes('VOICE_PHONE_NUMBER')) {
+      return {
+        success: false,
+        message: 'Voice service not configured. Please use USSD shopping instead or contact support.'
+      };
+    } else if (error.message && error.message.includes('insufficient')) {
+      return {
+        success: false,
+        message: 'Voice service temporarily unavailable due to low balance. Please use USSD shopping instead.'
+      };
+    } else {
+      return {
+        success: false,
+        message: 'Voice call service temporarily unavailable. Please use USSD shopping instead.'
+      };
+    }
   }
 }
 
