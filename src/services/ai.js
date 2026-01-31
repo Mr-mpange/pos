@@ -3,7 +3,7 @@ const PaymentService = require('./payments');
 const MarketplaceService = require('./marketplace');
 
 const API_KEY = process.env.GEMINI_API_KEY;
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest';
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 let genAI;
 let model;
 

@@ -144,11 +144,10 @@ router.post('/inbound', async (req, res) => {
         const replyFrom = (!isSandbox && process.env.AT_FROM_SHORTCODE) ? String(process.env.AT_FROM_SHORTCODE) : (to || undefined);
         const sendOptions = { to: [from], message: aiText };
         if (replyFrom) sendOptions.from = replyFrom;
-        if (linkId) sendOptions.linkId = linkId; // required for premium 2-way continuity
+        // Note: linkId removed as it's causing issues with SMS sending
         console.log('[AI Reply][Prepare]', {
           to: from,
           from: replyFrom || '(default)',
-          linkIdPresent: Boolean(linkId),
           length: (aiText || '').length,
         });
         const sendResult = await sms.send(sendOptions);
@@ -165,8 +164,8 @@ router.post('/inbound', async (req, res) => {
           const replyFrom = (!isSandbox && process.env.AT_FROM_SHORTCODE) ? String(process.env.AT_FROM_SHORTCODE) : (to || undefined);
           const sendOptions = { to: [from], message: `Ack: ${text}` };
           if (replyFrom) sendOptions.from = replyFrom;
-          if (linkId) sendOptions.linkId = linkId;
-          console.log('[AI Reply][Fallback][Prepare]', { to: from, from: replyFrom || '(default)', linkIdPresent: Boolean(linkId) });
+          // Note: linkId removed as it's causing issues with SMS sending
+          console.log('[AI Reply][Fallback][Prepare]', { to: from, from: replyFrom || '(default)' });
           const sendResult = await sms.send(sendOptions);
           const firstRecipient = sendResult?.SMSMessageData?.Recipients?.[0];
           console.log('[AI Reply][Fallback][Sent]', {
