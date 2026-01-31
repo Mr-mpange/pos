@@ -129,3 +129,13 @@ curl -Method POST -Uri http://localhost:3000/whatsapp/webhook -Headers @{"Conten
 - For 2-way SMS premium flow (subscriptions, linkId), additional setup is required.
 - Ensure your `.env` is filled with correct sandbox API key and username.
 - For WhatsApp, you need a WhatsApp-enabled sender and the correct REST endpoint from Africa's Talking. Contact AT support or check product docs.
+
+
+# Switch to sandbox (safe testing)
+npm run payment:sandbox
+
+# Switch to live (real payments) 
+npm run payment:live
+
+# Check current mode
+npm run payment:status

@@ -2,6 +2,7 @@ const express = require('express');
 const morgan = require('morgan');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const PaymentConfig = require('./config/payment');
 
 dotenv.config();
 
@@ -34,4 +35,7 @@ app.use((req, res) => {
 // Start
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  
+  // Log payment configuration
+  PaymentConfig.logConfig();
 });

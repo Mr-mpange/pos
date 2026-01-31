@@ -242,8 +242,8 @@ async function generateReply(userText, phoneNumber) {
           break;
           
         case 'clear':
-          MarketplaceService.clearCart(phoneNumber);
-          baseResponse = 'All cleared! Your cart is now empty.';
+          const clearResult = MarketplaceService.clearCart(phoneNumber);
+          baseResponse = clearResult.message;
           break;
           
         case 'orders':

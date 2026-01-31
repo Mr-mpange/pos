@@ -63,7 +63,85 @@ The system now accesses these Market Connect tables:
 - Order tracking with unique order numbers
 - SMS notifications to both buyers and vendors
 
-## Configuration
+## Payment Configuration
+
+The system supports two payment modes that can be easily switched:
+
+### 🧪 **Sandbox Mode** (Default - Safe for Testing)
+- **Simulated payments** - No real money is charged
+- **Auto-confirmation** - Payments automatically succeed/fail after 3 seconds
+- **Configurable success rate** - Default 90% success rate
+- **Safe for development** - Perfect for testing and demos
+
+### 💰 **Live Mode** (Production - Real Payments)
+- **Real mobile money payments** - Actual money is charged
+- **Integration required** - Needs live payment gateway configuration
+- **Production ready** - For actual business operations
+- **Requires credentials** - Live payment API keys needed
+
+### Switching Payment Modes
+
+#### Using NPM Scripts (Recommended):
+```bash
+# Switch to sandbox mode (safe testing)
+npm run payment:sandbox
+
+# Switch to live mode (real payments)
+npm run payment:live
+
+# Check current payment mode
+npm run payment:status
+```
+
+#### Using the Switcher Script:
+```bash
+# Switch to sandbox mode
+node switch-payment-mode.js sandbox
+
+# Switch to live mode  
+node switch-payment-mode.js live
+```
+
+### Environment Configuration
+
+#### Sandbox Settings:
+```env
+PAYMENT_MODE=sandbox
+SANDBOX_AUTO_CONFIRM_DELAY=3000    # Auto-confirm after 3 seconds
+SANDBOX_SUCCESS_RATE=0.9           # 90% success rate
+```
+
+#### Live Settings:
+```env
+PAYMENT_MODE=live
+LIVE_PAYMENT_GATEWAY_URL=https://api.payment-gateway.com
+LIVE_PAYMENT_API_KEY=your_live_api_key
+LIVE_PAYMENT_SECRET=your_live_secret
+```
+
+### Payment Gateway Integration
+
+For live payments, you'll need to integrate with Tanzania's mobile money providers:
+
+- **Vodacom M-Pesa** - Most popular mobile money service
+- **Tigo Pesa** - Tigo's mobile money platform  
+- **Airtel Money** - Airtel's mobile money service
+- **CRDB Bank Mobile** - Bank-based mobile money
+- **NMB Mobile Money** - NMB Bank's mobile service
+
+The system is designed to work with any payment gateway that supports:
+- PUSH payment requests (STK Push)
+- Webhook callbacks for payment confirmation
+- Standard REST API integration
+
+### Safety Features
+
+- **Mode validation** - System validates configuration on startup
+- **Clear logging** - Payment mode is clearly logged in console
+- **Error handling** - Graceful fallback if live payments aren't configured
+- **Visual indicators** - SANDBOX payments are clearly marked in logs and messages
+
+## Database Configuration
 
 The integration uses these environment variables in `.env`:
 

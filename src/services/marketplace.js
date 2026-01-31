@@ -157,8 +157,28 @@ class MarketplaceService {
 
   // Clear cart
   static clearCart(phoneNumber) {
+    const cart = this.getCart(phoneNumber);
+    const clearedItems = [...cart.items]; // Keep a copy of items being cleared
+    const clearedTotal = cart.total;
+    
     userCarts.delete(phoneNumber);
-    return { success: true, message: 'Cart cleared' };
+    
+    // Build detailed message about what was cleared
+    let message = 'Cart cleared successfully!';
+    if (clearedItems.length > 0) {
+      message = `Cart cleared! Removed ${clearedItems.length} item(s):\n`;
+      clearedItems.forEach(item => {
+        message += `- ${item.quantity} ${item.unit || 'unit'}(s) ${item.name} (${item.subtotal.toLocaleString()} TZS)\n`;
+      });
+      message += `Total cleared: ${clearedTotal.toLocaleString()} TZS`;
+    }
+    
+    return { 
+      success: true, 
+      message,
+      clearedItems,
+      clearedTotal
+    };
   }
 
   // Process checkout with PUSH payment
@@ -255,25 +275,114 @@ class MarketplaceService {
   static async initiatePushPayment(phoneNumber, amount, orderId) {
     try {
       const requestId = `PUSH${Date.now()}${Math.random().toString(36).substr(2, 4)}`;
+      const paymentMode = process.env.PAYMENT_MODE || 'sandbox';
+      const isSandbox = paymentMode === 'sandbox';
       
-      console.log(`[Marketplace] Initiating PUSH payment: ${amount.toLocaleString()} TZS to ${phoneNumber} for order ${orderId}`);
+      console.log(`[Marketplace] Initiating ${isSandbox ? 'SANDBOX' : 'LIVE'} PUSH payment: ${amount.toLocaleString()} TZS to ${phoneNumber} for order ${orderId}`);
       
-      // Simulate delay and auto-confirm payment after 5 seconds
-      setTimeout(async () => {
-        await this.confirmPayment(orderId, requestId, true);
-      }, 5000);
-      
-      return {
-        success: true,
-        requestId,
-        message: 'PUSH payment request sent'
-      };
+      if (isSandbox) {
+        // Sandbox mode - simulate payment
+        const autoConfirmDelay = parseInt(process.env.SANDBOX_AUTO_CONFIRM_DELAY) || 3000;
+        const successRate = parseFloat(process.env.SANDBOX_SUCCESS_RATE) || 0.9;
+        const willSucceed = Math.random() < successRate;
+        
+        console.log(`[Marketplace] SANDBOX: Will ${willSucceed ? 'succeed' : 'fail'} after ${autoConfirmDelay}ms`);
+        
+        // Simulate delay and auto-confirm payment
+        setTimeout(async () => {
+          await this.confirmPayment(orderId, requestId, willSucceed);
+        }, autoConfirmDelay);
+        
+        return {
+          success: true,
+          requestId,
+          message: 'SANDBOX: Payment request sent (simulated)'
+        };
+      } else {
+        // Live mode - integrate with real payment gateway
+        return await this.initiateLivePayment(phoneNumber, amount, orderId, requestId);
+      }
       
     } catch (error) {
       console.error('[Marketplace] PUSH payment error:', error);
       return {
         success: false,
         message: 'Failed to initiate payment'
+      };
+    }
+  }
+
+  // Live payment integration (to be implemented with real payment gateway)
+  static async initiateLivePayment(phoneNumber, amount, orderId, requestId) {
+    try {
+      console.log(`[Marketplace] LIVE PAYMENT: Initiating real payment for ${amount} TZS to ${phoneNumber}`);
+      
+      // TODO: Integrate with real mobile money API (M-Pesa, Tigo Pesa, Airtel Money, etc.)
+      // Example integration points:
+      // - Vodacom M-Pesa API
+      // - Tigo Pesa API  
+      // - Airtel Money API
+      // - CRDB Bank Mobile Money
+      // - NMB Mobile Money
+      
+      const liveGatewayUrl = process.env.LIVE_PAYMENT_GATEWAY_URL;
+      const liveApiKey = process.env.LIVE_PAYMENT_API_KEY;
+      
+      if (!liveGatewayUrl || !liveApiKey) {
+        console.error('[Marketplace] LIVE PAYMENT: Missing gateway configuration');
+        return {
+          success: false,
+          message: 'Payment gateway not configured. Please contact support.'
+        };
+      }
+      
+      // Example implementation (replace with actual payment gateway)
+      /*
+      const paymentRequest = {
+        phoneNumber: phoneNumber,
+        amount: amount,
+        currency: 'TZS',
+        reference: orderId,
+        description: `Soko Connect Order ${orderId}`,
+        callbackUrl: `${process.env.BASE_URL}/api/payment-callback`
+      };
+      
+      const response = await fetch(liveGatewayUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${liveApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(paymentRequest)
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        return {
+          success: true,
+          requestId: result.transactionId || requestId,
+          message: 'Payment request sent to your phone'
+        };
+      } else {
+        return {
+          success: false,
+          message: result.message || 'Payment initiation failed'
+        };
+      }
+      */
+      
+      // For now, return error since live payment is not implemented
+      return {
+        success: false,
+        message: 'Live payments not yet implemented. Please use sandbox mode for testing.'
+      };
+      
+    } catch (error) {
+      console.error('[Marketplace] Live payment error:', error);
+      return {
+        success: false,
+        message: 'Live payment service temporarily unavailable'
       };
     }
   }

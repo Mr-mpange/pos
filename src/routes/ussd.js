@@ -424,8 +424,8 @@ router.post('/', async (req, res) => {
       }
       else if (selection === cart.items.length + 2) {
         // Clear cart
-        MarketplaceService.clearCart(phoneNumber);
-        response = `END Cart cleared successfully.`;
+        const clearResult = MarketplaceService.clearCart(phoneNumber);
+        response = `END ${clearResult.message}`;
         clearSession(sessionId, phoneNumber);
       }
       else if (selection === 0) {
@@ -522,8 +522,8 @@ router.post('/', async (req, res) => {
         }
         else if (selection === cart.items.length + 2) {
           // Clear cart
-          MarketplaceService.clearCart(phoneNumber);
-          response = `END Cart cleared successfully.`;
+          const clearResult = MarketplaceService.clearCart(phoneNumber);
+          response = `END ${clearResult.message}`;
           clearSession(sessionId, phoneNumber);
         }
         else if (selection === 0) {

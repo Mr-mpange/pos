@@ -6,7 +6,11 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test-integration": "node test-integration.js",
+    "payment:sandbox": "node switch-payment-mode.js sandbox",
+    "payment:live": "node switch-payment-mode.js live",
+    "payment:status": "node -e \"console.log('Payment Mode:', process.env.PAYMENT_MODE || 'sandbox')\""
   },
   "keywords": [
     "africastalking",
